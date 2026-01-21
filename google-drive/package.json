@@ -1,0 +1,23 @@
+{
+  "name": "google-drive-skill",
+  "version": "1.0.0",
+  "description": "Claude Code skill for Google Drive integration",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "gdrive": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "googleapis": "^140.0.0",
+    "open": "^10.1.0"
+  },
+  "keywords": [
+    "claude-code",
+    "skill",
+    "google-drive"
+  ],
+  "license": "MIT"
+}

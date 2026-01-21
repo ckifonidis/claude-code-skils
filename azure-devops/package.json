@@ -1,0 +1,21 @@
+{
+  "name": "azure-devops-skill",
+  "version": "1.0.0",
+  "description": "Azure DevOps Boards skill for Claude - manage work items, boards, and sprints",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "azdo": "./src/cli.js"
+  },
+  "scripts": {
+    "cli": "node src/cli.js"
+  },
+  "keywords": [
+    "azure-devops",
+    "devops",
+    "boards",
+    "work-items",
+    "claude-skill"
+  ],
+  "license": "MIT"
+}
