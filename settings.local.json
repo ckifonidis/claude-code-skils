@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker compose:*)",
+      "Bash(curl:*)",
+      "Bash(SB=\"0a75b545-7cc9-4c29-b511-cd2e18ea791f\")",
+      "Bash(echo:*)"
+    ]
+  }
+}
