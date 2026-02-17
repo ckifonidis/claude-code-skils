@@ -24,6 +24,8 @@ Generates production-ready NestJS sandbox services from API request/response sam
 
 **Controller-Based Organization** - URLs are parsed into `{api}/{controller}/{action}` segments. Each unique controller value gets its own NestJS module (controller, service, DTOs). When URL segments are ambiguous, ask the user for clarification using AskUserQuestion.
 
+**Entity-Based Data Model** - Instead of storing static responses per endpoint, identify the domain entities (e.g., Customer, Card, Account) from the API data. Determine the root entity (the one others relate to) and model relationships. The in-memory store holds entities, and controller services query entities to dynamically construct API responses. This enables realistic behavior like searching, filtering, and cross-entity lookups. See `references/entity-model.md` for the full entity identification and modeling process.
+
 </essential_principles>
 
 <sandbox_management_api>
@@ -51,6 +53,7 @@ Follow `workflows/generate-service.md` to parse API data and generate the comple
 
 <references>
 - references/data-parsing.md - Parse API URLs into `{api}/{controller}/{action}`, extract DTOs, handle ambiguity
+- references/entity-model.md - Entity identification, relationship mapping, entity store design, response builders
 - references/sandbox-architecture.md - NestJS module structure, in-memory storage patterns
 - references/docker-setup.md - Dockerfile, docker-compose patterns
 </references>
@@ -66,9 +69,11 @@ Follow `workflows/generate-service.md` to parse API data and generate the comple
 <success_criteria>
 The skill is successful when:
 - URLs are correctly parsed into `{api}/{controller}/{action}` segments (ambiguities resolved with user)
+- Domain entities are identified with their primary keys and relationships (root entity confirmed with user)
 - Generated service correctly implements all controllers and endpoints from input data
 - Sandbox CRUD operations are functional at `/sandboxes` endpoints
-- Controller endpoints return sample data when called with sandboxId
+- Entity store holds normalized entities, and controllers query entities to build responses dynamically
+- Controller endpoints support realistic behavior (search, filter, cross-entity lookups) based on request parameters
 - DTOs accurately match provided API structures with Swagger decorators
 - Docker containerization is ready for deployment
 - Swagger documentation is accessible at `/api`

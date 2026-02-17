@@ -15,28 +15,90 @@ export class SandboxModule {}
 ```
 </sandbox_module_template>
 
-<sandbox_service_template>
+<sandbox_store_interfaces_template>
 ```typescript
-// src/sandbox/sandbox.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
-import { CreateSandboxDto } from './dto/create-sandbox.dto';
-import { UpdateSandboxDto } from './dto/update-sandbox.dto';
+// src/common/interfaces/sandbox-store.interface.ts
 
-export interface EndpointData {
-  seedResponse: any;
-  requestSchema: Record<string, any>;
-}
-
-export interface ControllerData {
-  [endpoint: string]: EndpointData;
+// EntityStore holds all entity collections for a sandbox.
+// Each entity type is a Map keyed by its primary key.
+export interface EntityStore {
+  [entityType: string]: Map<string, any>;
+  // Generated entity Maps go here, e.g.:
+  // customers: Map<string, CustomerEntity>;
+  // cards: Map<string, CardEntity>;
+  // accounts: Map<string, AccountEntity>;
 }
 
 export interface SandboxData {
   sandboxId: string;
   createdAt: Date;
-  controllers: Record<string, ControllerData>;
+  entities: EntityStore;
 }
+```
+
+```typescript
+// src/common/interfaces/entities.interface.ts
+// {{ENTITY_INTERFACES_BLOCK}}
+// Generate one interface per identified entity type.
+// Each interface has:
+// - A primary key field (used as the Map key)
+// - Foreign key fields linking to parent entities
+// - All data fields merged from every API response containing this entity
+//
+// Example:
+//
+// export interface CustomerEntity {
+//   customerCode: string;       // Primary key
+//   name: string;
+//   taxNo: string;
+//   branch: { code: string; name: string; /* ... */ };
+//   type: string;
+//   activityStatus: string;
+//   // ... all fields from customer search response items
+// }
+//
+// export interface CardEntity {
+//   cardNumber: string;         // Primary key
+//   customerCode: string;       // Foreign key → CustomerEntity
+//   cardStatus: string;
+//   cardStatusDescription: string;
+//   productName: string;
+//   productCode: string;
+//   expirationDate: string;
+//   // ... merged fields from fetchCreditCardFullData, fetchDetails, position subProducts
+//   limits?: { /* ... */ };
+//   security?: { /* ... */ };
+//   availableActions?: Record<string, string>;
+// }
+//
+// export interface AccountEntity {
+//   account: string;            // Primary key
+//   customerCode: string;       // Foreign key → CustomerEntity
+//   description: string;
+//   currency: { code: string | null; name: string };
+//   amount: string;
+//   branch: string;
+//   // ... all fields from position product sub-products
+// }
+```
+
+**Entity interface generation rules:**
+1. Primary key field is always `string` type (convert numbers to strings)
+2. Foreign key fields reference another entity's primary key
+3. Merge fields from all API responses that contain this entity's data
+4. Use optional (`?`) for fields that only appear in some responses
+5. Preserve exact field names and nesting from the original API data
+6. Nested objects (like `limits`, `security`, `branch`) become inline type definitions or separate interfaces
+</sandbox_store_interfaces_template>
+
+<sandbox_service_template>
+```typescript
+// src/sandbox/sandbox.service.ts
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
+import { SandboxData, EntityStore } from '../common/interfaces/sandbox-store.interface';
+import { CreateSandboxDto } from './dto/create-sandbox.dto';
+import { UpdateSandboxDto } from './dto/update-sandbox.dto';
 
 @Injectable()
 export class SandboxService {
@@ -52,7 +114,7 @@ export class SandboxService {
     const sandboxData: SandboxData = {
       sandboxId,
       createdAt: new Date(),
-      controllers: this.generateSeedData(),
+      entities: this.generateSeedEntities(),
     };
 
     this.sandboxes.set(sandboxId, sandboxData);
@@ -70,13 +132,34 @@ export class SandboxService {
   updateSandbox(sandboxId: string, updateDto: UpdateSandboxDto): SandboxData {
     const sandbox = this.getSandbox(sandboxId);
 
-    if (updateDto.controllers) {
-      for (const [controller, controllerData] of Object.entries(updateDto.controllers)) {
-        if (!sandbox.controllers[controller]) {
-          sandbox.controllers[controller] = {};
+    if (updateDto.entities) {
+      for (const [entityType, operations] of Object.entries(updateDto.entities)) {
+        const collection = sandbox.entities[entityType];
+        if (!collection) continue;
+
+        // Add new entities
+        if (operations.add) {
+          for (const entity of operations.add) {
+            const primaryKey = this.getPrimaryKey(entityType, entity);
+            collection.set(primaryKey, entity);
+          }
         }
-        for (const [endpoint, endpointData] of Object.entries(controllerData)) {
-          sandbox.controllers[controller][endpoint] = endpointData as EndpointData;
+
+        // Update existing entities (partial merge)
+        if (operations.update) {
+          for (const [key, updates] of Object.entries(operations.update)) {
+            const existing = collection.get(key);
+            if (existing) {
+              collection.set(key, { ...existing, ...updates });
+            }
+          }
+        }
+
+        // Remove entities
+        if (operations.remove) {
+          for (const key of operations.remove) {
+            collection.delete(key);
+          }
         }
       }
     }
@@ -90,51 +173,67 @@ export class SandboxService {
     }
   }
 
-  getControllerData(sandboxId: string, controller: string): ControllerData {
-    const sandbox = this.getSandbox(sandboxId);
-    return sandbox.controllers[controller] || {};
-  }
-
-  getEndpointData(sandboxId: string, controller: string, endpoint: string): any {
-    const controllerData = this.getControllerData(sandboxId, controller);
-    const endpointData = controllerData[endpoint];
-    if (!endpointData) {
-      throw new NotFoundException(
-        `Endpoint ${endpoint} not found in controller ${controller}`,
-      );
-    }
-    return endpointData.seedResponse;
-  }
-
   listSandboxes(): SandboxData[] {
     return Array.from(this.sandboxes.values());
   }
 
-  private generateSeedData(): Record<string, ControllerData> {
-    // {{SEED_DATA_BLOCK}}
-    // This method will be populated with actual seed data
-    // from the parsed API responses during generation.
-    // Each controller maps to its endpoints, each endpoint
-    // maps to { seedResponse, requestSchema }
+  // --- Entity access methods used by controller services ---
+
+  getEntities(sandboxId: string): EntityStore {
+    return this.getSandbox(sandboxId).entities;
+  }
+
+  getEntityCollection<T>(sandboxId: string, entityType: string): Map<string, T> {
+    const entities = this.getEntities(sandboxId);
+    return (entities[entityType] as Map<string, T>) || new Map();
+  }
+
+  getEntity<T>(sandboxId: string, entityType: string, primaryKey: string): T | undefined {
+    return this.getEntityCollection<T>(sandboxId, entityType).get(primaryKey);
+  }
+
+  findEntities<T>(sandboxId: string, entityType: string, predicate: (entity: T) => boolean): T[] {
+    return Array.from(this.getEntityCollection<T>(sandboxId, entityType).values()).filter(predicate);
+  }
+
+  // --- Private methods ---
+
+  // {{PRIMARY_KEY_MAP}}
+  // Map entity types to their primary key field names.
+  // Generated from the identified entities during parsing.
+  private getPrimaryKey(entityType: string, entity: any): string {
+    const keyMap: Record<string, string> = {
+      // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
+    };
+    const keyField = keyMap[entityType];
+    return keyField ? String(entity[keyField]) : entity.id || uuidv4();
+  }
+
+  private generateSeedEntities(): EntityStore {
+    // {{SEED_ENTITIES_BLOCK}}
+    // Extract entity instances from the parsed API sample responses.
+    // Each entity type is populated as a Map<primaryKey, entityData>.
+    //
+    // Example:
+    // const customers = new Map<string, any>();
+    // customers.set('1317952138', { customerCode: '1317952138', name: '...', taxNo: '140700917', ... });
+    //
+    // const cards = new Map<string, any>();
+    // cards.set('5278900043068407', { cardNumber: '5278900043068407', customerCode: '1317952138', ... });
+    //
+    // const accounts = new Map<string, any>();
+    // accounts.set('81751218256', { account: '81751218256', customerCode: '1317952138', ... });
+    //
+    // return { customers, cards, accounts };
+
     return {};
   }
 }
 ```
 
-**Placeholder:**
-- `{{SEED_DATA_BLOCK}}` - Replace the `return {}` with the actual seed data object built from the parsed API responses. Structure:
-```typescript
-return {
-  'controller-name': {
-    'actionName': {
-      seedResponse: { /* actual parsed response JSON */ },
-      requestSchema: { /* actual parsed request payload structure */ },
-    },
-    // more endpoints...
-  },
-  // more controllers...
-};
-```
+**Placeholders:**
+- `{{SEED_ENTITIES_BLOCK}}` - Replace `return {}` with entity Maps populated from parsed API responses. Each entity's fields are extracted and merged from all endpoints where that entity appears.
+- `{{PRIMARY_KEY_MAP}}` - Replace the empty `keyMap` object with mappings from entity type names to their primary key field names.
 </sandbox_service_template>
 
 <sandbox_controller_template>
@@ -147,7 +246,8 @@ import {
 import {
   ApiTags, ApiOperation, ApiParam, ApiBody, ApiResponse,
 } from '@nestjs/swagger';
-import { SandboxService, SandboxData } from './sandbox.service';
+import { SandboxService } from './sandbox.service';
+import { SandboxData } from '../common/interfaces/sandbox-store.interface';
 import { CreateSandboxDto } from './dto/create-sandbox.dto';
 import { UpdateSandboxDto } from './dto/update-sandbox.dto';
 
@@ -157,7 +257,7 @@ export class SandboxController {
   constructor(private readonly sandboxService: SandboxService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Create a new sandbox with seed data' })
+  @ApiOperation({ summary: 'Create a new sandbox with seed entities' })
   @ApiBody({ type: CreateSandboxDto })
   @ApiResponse({ status: 201, description: 'Sandbox created successfully' })
   create(@Body() createDto: CreateSandboxDto): SandboxData {
@@ -172,7 +272,7 @@ export class SandboxController {
   }
 
   @Get(':sandboxId')
-  @ApiOperation({ summary: 'Get sandbox configuration and data models' })
+  @ApiOperation({ summary: 'Get sandbox configuration and entity summary' })
   @ApiParam({ name: 'sandboxId', description: 'The sandbox identifier' })
   @ApiResponse({ status: 200, description: 'Sandbox data' })
   @ApiResponse({ status: 404, description: 'Sandbox not found' })
@@ -181,7 +281,7 @@ export class SandboxController {
   }
 
   @Put(':sandboxId')
-  @ApiOperation({ summary: 'Update sandbox endpoints or data models' })
+  @ApiOperation({ summary: 'Update sandbox entities (add, update, or remove)' })
   @ApiParam({ name: 'sandboxId', description: 'The sandbox identifier' })
   @ApiBody({ type: UpdateSandboxDto })
   @ApiResponse({ status: 200, description: 'Sandbox updated' })
@@ -228,14 +328,26 @@ export class CreateSandboxDto {
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsObject } from 'class-validator';
 
+export class EntityOperationsDto {
+  add?: any[];
+  update?: Record<string, any>;
+  remove?: string[];
+}
+
 export class UpdateSandboxDto {
   @ApiPropertyOptional({
-    description: 'Controller data to add or update. Keys are controller names, values are endpoint data maps.',
-    example: { cards: { fetchDetails: { seedResponse: {}, requestSchema: {} } } },
+    description: 'Entity operations by entity type. Each type supports add (array of new entities), update (map of primaryKey -> partial updates), and remove (array of primary keys to delete).',
+    example: {
+      customers: {
+        add: [{ customerCode: '999', name: 'New Customer', taxNo: '111222333' }],
+        update: { '1317952138': { name: 'Updated Name' } },
+        remove: [],
+      },
+    },
   })
   @IsOptional()
   @IsObject()
-  controllers?: Record<string, Record<string, any>>;
+  entities?: Record<string, EntityOperationsDto>;
 }
 ```
 </sandbox_dtos_template>

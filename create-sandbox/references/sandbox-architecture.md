@@ -1,5 +1,5 @@
 <architecture_overview>
-The generated NestJS sandbox service follows a modular architecture with sandbox lifecycle management and controller-specific modules for each API group identified from the input data.
+The generated NestJS sandbox service follows a modular architecture with sandbox lifecycle management and controller-specific modules for each API group identified from the input data. Data is stored as normalized entities in an entity store, and controller services query entities to dynamically construct API responses.
 </architecture_overview>
 
 <project_structure>
@@ -12,13 +12,14 @@ sandbox-service/
 │   │   ├── dto/
 │   │   │   └── api-header.dto.ts        # Shared API header DTO
 │   │   ├── interfaces/
-│   │   │   └── sandbox-store.interface.ts # In-memory store interface
+│   │   │   ├── sandbox-store.interface.ts # SandboxData, EntityStore interfaces
+│   │   │   └── entities.interface.ts     # Entity type interfaces (CustomerEntity, CardEntity, etc.)
 │   │   └── decorators/
 │   │       └── sandbox-id.decorator.ts  # Extract sandboxId from header/param
 │   ├── sandbox/
 │   │   ├── sandbox.module.ts
 │   │   ├── sandbox.controller.ts        # CRUD for sandbox lifecycle
-│   │   ├── sandbox.service.ts           # Sandbox management logic
+│   │   ├── sandbox.service.ts           # Sandbox management + entity access methods
 │   │   └── dto/
 │   │       ├── create-sandbox.dto.ts
 │   │       ├── update-sandbox.dto.ts
@@ -27,7 +28,7 @@ sandbox-service/
 │       ├── {controller-name}/           # One per identified controller
 │       │   ├── {controller}.module.ts
 │       │   ├── {controller}.controller.ts
-│       │   ├── {controller}.service.ts
+│       │   ├── {controller}.service.ts  # Queries entities, builds API responses
 │       │   └── dto/
 │       │       ├── {action}-request.dto.ts
 │       │       └── {action}-response.dto.ts
@@ -41,67 +42,87 @@ sandbox-service/
 ```
 </project_structure>
 
+<sandbox_data_structure>
+```typescript
+// The entity-based in-memory data structure
+
+// Each entity type is a separate interface with a primary key
+// and optional foreign keys linking to other entities.
+// Entity interfaces are generated from the parsed API response data.
+
+interface EntityStore {
+  // One Map per identified entity type, keyed by primary key
+  [entityType: string]: Map<string, any>;
+  // Example:
+  // customers: Map<string, CustomerEntity>;
+  // cards: Map<string, CardEntity>;
+  // accounts: Map<string, AccountEntity>;
+}
+
+interface SandboxData {
+  sandboxId: string;
+  createdAt: Date;
+  entities: EntityStore;
+}
+```
+
+**Key differences from static response storage:**
+- Entities are normalized (flat, linked by keys) instead of nested per-endpoint
+- Each entity type has its own Map, keyed by primary key
+- Foreign keys link related entities (e.g., `CardEntity.customerCode` → `CustomerEntity`)
+- Controller services query entities and construct responses dynamically
+</sandbox_data_structure>
+
 <sandbox_service_pattern>
-The SandboxService manages the in-memory store for all sandboxes:
+The SandboxService manages the entity store and provides entity access methods:
 
 ```typescript
-// Pattern for SandboxService
 @Injectable()
 export class SandboxService {
-  // Map of sandboxId -> controller -> endpoint -> data
   private sandboxes: Map<string, SandboxData> = new Map();
 
-  createSandbox(createDto: CreateSandboxDto): SandboxResponseDto {
+  createSandbox(createDto: CreateSandboxDto): SandboxData {
     const sandboxId = createDto.sandboxId || uuidv4();
-    // Initialize with seed data from all controllers
-    this.sandboxes.set(sandboxId, this.generateSeedData());
-    return { sandboxId, controllers: [...this.sandboxes.get(sandboxId).keys()] };
+    const sandboxData: SandboxData = {
+      sandboxId,
+      createdAt: new Date(),
+      entities: this.generateSeedEntities(),
+    };
+    this.sandboxes.set(sandboxId, sandboxData);
+    return sandboxData;
   }
 
-  getSandbox(sandboxId: string): SandboxData {
-    if (!this.sandboxes.has(sandboxId)) {
-      throw new NotFoundException(`Sandbox ${sandboxId} not found`);
-    }
-    return this.sandboxes.get(sandboxId);
+  // Entity access methods used by controller services
+  getEntities(sandboxId: string): EntityStore {
+    return this.getSandbox(sandboxId).entities;
   }
 
-  updateSandbox(sandboxId: string, updateDto: UpdateSandboxDto): SandboxResponseDto {
-    // Update specific controller data or endpoint configurations
+  getEntityCollection<T>(sandboxId: string, entityType: string): Map<string, T> {
+    const entities = this.getEntities(sandboxId);
+    return (entities[entityType] as Map<string, T>) || new Map();
   }
 
-  deleteSandbox(sandboxId: string): void {
-    if (!this.sandboxes.delete(sandboxId)) {
-      throw new NotFoundException(`Sandbox ${sandboxId} not found`);
-    }
+  getEntity<T>(sandboxId: string, entityType: string, primaryKey: string): T | undefined {
+    return this.getEntityCollection<T>(sandboxId, entityType).get(primaryKey);
   }
 
-  // Controller services call this to get/set data for their endpoints
-  getControllerData(sandboxId: string, controller: string): any {
-    const sandbox = this.getSandbox(sandboxId);
-    return sandbox[controller];
+  findEntities<T>(sandboxId: string, entityType: string, predicate: (entity: T) => boolean): T[] {
+    return Array.from(this.getEntityCollection<T>(sandboxId, entityType).values()).filter(predicate);
+  }
+
+  private generateSeedEntities(): EntityStore {
+    // {{SEED_ENTITIES_BLOCK}}
+    // Populated with entity instances extracted from parsed API responses.
+    // Each entity type is a Map keyed by primary key.
+    return {
+      customers: new Map(),
+      cards: new Map(),
+      accounts: new Map(),
+    };
   }
 }
 ```
 </sandbox_service_pattern>
-
-<sandbox_data_structure>
-```typescript
-// The in-memory data structure
-interface SandboxData {
-  [controller: string]: ControllerData;
-}
-
-interface ControllerData {
-  [endpoint: string]: EndpointData;
-}
-
-interface EndpointData {
-  seedResponse: any;           // The original sample response
-  customResponses: any[];      // User-added response variations
-  requestSchema: any;          // Expected request structure
-}
-```
-</sandbox_data_structure>
 
 <controller_pattern>
 Each controller follows this pattern:
@@ -110,17 +131,14 @@ Each controller follows this pattern:
 @ApiTags('{controller-name}')
 @Controller('sandbox/:sandboxId/{controller-path}')
 export class ResourceController {
-  constructor(
-    private readonly resourceService: ResourceService,
-    private readonly sandboxService: SandboxService,
-  ) {}
+  constructor(private readonly resourceService: ResourceService) {}
 
   @Post('{action-path}')
   @ApiOperation({ summary: '{Action description}' })
   async actionName(
     @Param('sandboxId') sandboxId: string,
     @Body() requestDto: ActionRequestDto,
-  ): Promise<ActionResponseDto> {
+  ): Promise<any> {
     return this.resourceService.handleAction(sandboxId, requestDto);
   }
 }
@@ -128,51 +146,101 @@ export class ResourceController {
 
 **Key points:**
 - All controller endpoints are prefixed with `/sandbox/:sandboxId/`
-- The sandboxId param identifies which sandbox's data to use
-- The controller service retrieves data from the SandboxService
+- The sandboxId param identifies which sandbox's entity store to query
+- The controller service queries entities and builds the API response
 - Request/response DTOs match the original API structure
 </controller_pattern>
 
 <controller_service_pattern>
+Controller services query entities and build responses dynamically:
+
 ```typescript
 @Injectable()
 export class ResourceService {
   constructor(private readonly sandboxService: SandboxService) {}
 
   async handleAction(sandboxId: string, requestDto: any): Promise<any> {
-    const controllerData = this.sandboxService.getControllerData(sandboxId, 'controller-name');
-    const endpointData = controllerData['actionName'];
+    // 1. Extract lookup/filter parameters from request
+    const { someId, someFilter } = requestDto.payload;
 
-    // Return the seed response, optionally filtered by request params
+    // 2. Query entities from the store
+    const entities = this.sandboxService.getEntities(sandboxId);
+    let results = Array.from(entities.someEntityType.values());
+
+    // 3. Filter based on request parameters
+    if (someFilter) {
+      results = results.filter(e => e.field === someFilter);
+    }
+
+    // 4. Build response in the original API format
     return {
-      payload: endpointData.seedResponse.payload,
+      payload: {
+        items: results.map(e => this.toResponseItem(e)),
+        moreData: false,
+      },
       exception: null,
       messages: null,
       executionTime: 0.0,
     };
   }
+
+  // Map entity fields to the API response shape
+  private toResponseItem(entity: any): any {
+    return { /* map entity fields to match original API response */ };
+  }
 }
 ```
+
+**Response builder principles:**
+- Request parameters drive filtering and lookups
+- Response format matches the original API sample responses exactly
+- Entity fields populate the response
+- Derived fields (counts, totals, flags) are computed at response time
+- Missing entities return empty results, not errors
 </controller_service_pattern>
 
 <sandbox_controller_endpoints>
 ```
-POST   /sandboxes                              → Create new sandbox with seed data
-GET    /sandboxes/:sandboxId                   → Get sandbox configuration and data summary
-PUT    /sandboxes/:sandboxId                   → Update sandbox data or endpoint configs
+POST   /sandboxes                              → Create new sandbox with seed entities
+GET    /sandboxes                              → List all sandboxes
+GET    /sandboxes/:sandboxId                   → Get sandbox configuration and entity summary
+PUT    /sandboxes/:sandboxId                   → Update sandbox entities (add/update/remove)
 DELETE /sandboxes/:sandboxId                   → Delete sandbox and free memory
 
-GET    /sandbox/:sandboxId/{controller}/{action}  → Controller-specific endpoints
-POST   /sandbox/:sandboxId/{controller}/{action}  → Controller-specific endpoints
+POST   /sandbox/:sandboxId/{controller}/{action}  → Controller-specific endpoints (query entities)
 ```
 </sandbox_controller_endpoints>
+
+<update_sandbox_format>
+The PUT endpoint supports entity-level updates:
+
+```json
+{
+  "entities": {
+    "customers": {
+      "add": [{ "customerCode": "999", "name": "New Customer", "taxNo": "111222333" }],
+      "update": { "1317952138": { "name": "Updated Name" } },
+      "remove": ["old-customer-code"]
+    },
+    "cards": {
+      "add": [{ "cardNumber": "1234567890", "customerCode": "999", "cardStatus": "00" }]
+    }
+  }
+}
+```
+
+This enables test scenarios like:
+- Adding multiple customers to test search
+- Modifying card statuses to test different states
+- Removing entities to test empty-result scenarios
+</update_sandbox_format>
 
 <swagger_configuration>
 The generated service includes full Swagger/OpenAPI documentation:
 
 - **Title:** Generated from the API source (e.g., "NBG Sandbox API")
 - **Version:** "1.0.0"
-- **Description:** "Sandbox service with in-memory data for API testing"
+- **Description:** "Sandbox service with entity-based in-memory data for API testing"
 - **Endpoint:** `/api` for Swagger UI, `/api-json` for OpenAPI spec
 - All DTOs decorated with `@ApiProperty()`
 - All controllers decorated with `@ApiTags()`
