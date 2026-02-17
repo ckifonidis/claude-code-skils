@@ -1,5 +1,5 @@
 ---
-name: create-sandbox
+name: create-nestjs-sandbox
 description: Generates containerized NestJS sandbox services from API request/response samples. Creates in-memory endpoints organized by controller (cards, customer, position) with sandbox lifecycle management. Use when building mock API services or creating sandbox environments from sample data.
 ---
 
