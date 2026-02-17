@@ -29,11 +29,26 @@ Do NOT proceed with any other steps if not in a git repository.
 ### 2. Gather Required Information
 
 The user will provide:
-- **Work Item ID** - The Azure DevOps user story ID
+- **Board URL** - The Azure DevOps board URL (e.g., `https://dev.azure.com/ORG/PROJECT/_boards/board/t/TEAM/Stories`)
+- **Work Item ID** - The Azure DevOps user story ID (optional if creating new)
 - **Organization** (optional) - Azure DevOps organization (defaults to AZDO_ORGANIZATION env var)
 - **Project** (optional) - Azure DevOps project (defaults to AZDO_PROJECT env var)
 
 The repository is automatically detected from the current working directory.
+
+### 2b. Determine Correct Area Path (CRITICAL)
+
+**IMPORTANT**: Before creating or updating any work items, you MUST determine the correct area path:
+
+1. **Parse the board URL** to extract the team name (URL decode if needed, e.g., `Dev%20Team` → `Dev Team`)
+2. **Fetch area paths** to find the team's area:
+   ```bash
+   node ~/.claude/skills/azure-devops/src/cli.js area list --depth 2
+   ```
+3. **Find the matching area path** (e.g., `Project\Team Name`)
+4. **Use that area path** for ALL work items (stories and subtasks)
+
+**Why**: Work items appear on a board based on their Area Path, NOT the team name. Using the wrong area path will cause work items to appear on the wrong board.
 
 ### 3. Fetch the User Story and Subtasks
 

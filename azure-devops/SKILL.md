@@ -8,6 +8,57 @@ allowed-tools: Bash
 
 This skill provides a CLI tool to manage Azure DevOps boards, work items, sprints, and queries.
 
+## CRITICAL: Board URL Required for Creating Work Items
+
+**IMPORTANT**: When creating User Stories, Tasks, or any work items, you MUST:
+
+1. **Request a board URL** from the user (e.g., `https://dev.azure.com/ORG/PROJECT/_boards/board/t/TEAM/Stories`)
+2. **Parse the URL** to extract the team name
+3. **Fetch the team's area path** before creating any work items
+4. **Use that area path** for all work items to ensure they appear on the correct board
+
+### Workflow for Creating Work Items
+
+```bash
+# Step 1: Parse the board URL to get the team name
+# URL format: https://dev.azure.com/{org}/{project}/_boards/board/t/{team}/Stories
+# Example: https://dev.azure.com/NBGIDP/ArtificialIntelligence/_boards/board/t/Dev%20Team/Stories
+# Team = "Dev Team" (URL decoded)
+
+# Step 2: List areas to find the team's area path
+node ~/.claude/skills/azure-devops/src/cli.js area list --depth 2
+
+# Step 3: Find the area path that matches the team name
+# Look for: "path": "\\{Project}\\Area\\{Team Name}"
+# Example: "ArtificialIntelligence\\Dev Team"
+
+# Step 4: Use that area path when creating work items
+node ~/.claude/skills/azure-devops/src/cli.js wi create "User Story" \
+  --title "My Story" \
+  --areaPath "ArtificialIntelligence\\Dev Team" \
+  --iterationPath "ArtificialIntelligence\\Sprint 1"
+```
+
+### Why This Matters
+
+- Work items appear on a team's board based on their **Area Path**, NOT the team name in configuration
+- Each team is configured to track specific area paths
+- If you use the wrong area path, the work item will appear on a different team's board or not at all
+
+### Common Mistake to Avoid
+
+❌ **WRONG**: Using the project root as area path
+```bash
+--areaPath "ArtificialIntelligence"  # This goes to "ArtificialIntelligence Team", not "Dev Team"
+```
+
+✅ **CORRECT**: Using the team-specific area path
+```bash
+--areaPath "ArtificialIntelligence\\Dev Team"  # This goes to "Dev Team" board
+```
+
+---
+
 ## Configuration
 
 ### Option 1: .env file (Recommended)

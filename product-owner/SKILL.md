@@ -61,9 +61,23 @@ Iterate on the story based on user feedback:
 
 ### 6. Create in Azure DevOps
 
-Once approved, use the `/azure-devops` skill to:
-1. Create the User Story with title, description, and acceptance criteria
-2. **Only if technical design exists**: Create each subtask as a Task work item and link to parent
+**CRITICAL: Board URL Required**
+
+Before creating any work items, you MUST:
+1. **Request the board URL** from the user (e.g., `https://dev.azure.com/ORG/PROJECT/_boards/board/t/TEAM/Stories`)
+2. **Parse the URL** to extract the team name (URL decode if needed, e.g., `Dev%20Team` → `Dev Team`)
+3. **Fetch the team's area path** by running:
+   ```bash
+   node ~/.claude/skills/azure-devops/src/cli.js area list --depth 2
+   ```
+4. **Find the matching area path** (e.g., `Project\Team Name`)
+5. **Use that area path** for ALL work items
+
+**Why**: Work items appear on a board based on their Area Path, NOT the team name. Using the wrong area path will cause work items to appear on the wrong board or not at all.
+
+Once you have the correct area path, use the `/azure-devops` skill to:
+1. Create the User Story with title, description, acceptance criteria, **and the correct area path**
+2. **Only if technical design exists**: Create each subtask as a Task work item, link to parent, **using the same area path**
 
 ---
 
