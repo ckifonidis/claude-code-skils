@@ -337,3 +337,77 @@ This allows test scenarios to:
 - Modify entity fields to test different states (e.g., blocked cards, inactive accounts)
 - Remove entities to test empty-result scenarios
 </update_sandbox_entities>
+
+<entity_validation>
+## Entity Validation on Add Operations
+
+When entities are added via the PUT update endpoint, they must be validated before storage. Validation occurs at the **service level** (not via class-validator DTOs) because the request body uses dynamic keys (`Record<string, any>`) that class-validator cannot introspect.
+
+### Why Service-Level Validation (Not DTO-Level)
+
+NestJS's `@ValidateNested()` + `@Type(() => SomeDto)` does **NOT** work correctly with `Record<string, SomeDto>`. When applied to a record type, class-transformer treats the entire Record object as the DTO instance (checking keys like `"customers"` against the DTO's properties) rather than validating each value independently. This causes legitimate requests to fail with `"property customers should not exist"`.
+
+The correct approach:
+- The `UpdateSandboxDto.entities` field is typed as `Record<string, any>` (no `@ValidateNested`, no `@Type`)
+- Only `@IsOptional()` and `@IsObject()` decorators are applied at the DTO level
+- All operation-level and entity-level validation is performed in `SandboxService.updateSandbox()`
+
+### Entity Schema Validation
+
+Define an `entitySchemas` map on the service that maps each entity type to its required fields and their expected `typeof` types:
+
+```typescript
+private readonly entitySchemas: Record<string, Record<string, string>> = {
+  customers: {
+    customerCode: 'string', name: 'string', taxNo: 'string',
+    branch: 'object', type: 'string', activityStatus: 'string',
+    // ... all required fields with their typeof type
+  },
+  accounts: {
+    account: 'string', accountNoCD: 'string', branch: 'string',
+    currency: 'object', amount: 'string',
+    // ...
+  },
+  cards: {
+    cardNumber: 'string',
+  },
+  // ... one entry per entity type
+};
+```
+
+The `validateEntityShape()` method checks each entity in an `add` operation:
+1. Entity must be a non-null object
+2. All required fields (from schema) must be present and not `undefined`
+3. Each field's `typeof` must match the expected type (null is allowed for any field)
+
+### Uniqueness Constraints
+
+Define a `uniqueFieldsMap` that specifies which fields must be unique within each entity collection:
+
+```typescript
+private readonly uniqueFieldsMap: Record<string, string[]> = {
+  customers: ['taxNo', 'customerCode'],
+  accounts: ['account'],
+  cards: ['cardNumber'],
+};
+```
+
+The `validateUniqueFields()` method checks:
+- New entities don't duplicate existing values for unique fields
+- New entities within the same batch don't duplicate each other
+
+Uniqueness violations throw `ConflictException` (HTTP 409).
+
+### Validation Order in updateSandbox()
+
+The update method uses a **two-pass pattern** for atomicity:
+
+1. **Pass 1 (Validate)**: Iterate all entity types and operations, validating:
+   - Entity type exists in the store → `BadRequestException`
+   - Operation keys are valid (only `add`, `update`, `remove`) → `BadRequestException`
+   - Entity shape validation on `add` → `BadRequestException`
+   - Uniqueness constraints on `add` → `ConflictException`
+2. **Pass 2 (Mutate)**: Only if all validations pass, apply all mutations
+
+This prevents partial updates where some entity types are mutated before a validation error on a later entity type.
+</entity_validation>

@@ -108,7 +108,7 @@ export interface SerializedSandboxData {
 <sandbox_service_template>
 ```typescript
 // src/sandbox/sandbox.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import {
   SandboxData,
@@ -121,6 +121,40 @@ import { UpdateSandboxDto } from './dto/update-sandbox.dto';
 @Injectable()
 export class SandboxService {
   private sandboxes: Map<string, SandboxData> = new Map();
+
+  // {{UNIQUE_FIELDS_MAP}}
+  // Maps entity types to fields that must be unique within the collection.
+  // Used by validateUniqueFields() to prevent duplicate entries.
+  private readonly uniqueFieldsMap: Record<string, string[]> = {
+    // e.g.: customers: ['taxNo', 'customerCode'], accounts: ['account'], cards: ['cardNumber']
+  };
+
+  // {{PRIMARY_KEY_MAP}}
+  // Maps entity type names to their primary key field names.
+  private readonly primaryKeyMap: Record<string, string> = {
+    // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
+  };
+
+  // {{ENTITY_SCHEMAS}}
+  // Maps each entity type to its required fields and their typeof types.
+  // Used by validateEntityShape() to check entities on add operations.
+  // Derive from the entity interfaces in entities.interface.ts.
+  private readonly entitySchemas: Record<string, Record<string, string>> = {
+    // e.g.:
+    // customers: {
+    //   customerCode: 'string', name: 'string', taxNo: 'string',
+    //   branch: 'object', type: 'string', activityStatus: 'string',
+    //   // ... all required (non-optional) fields
+    // },
+    // accounts: {
+    //   account: 'string', accountNoCD: 'string', branch: 'string',
+    //   currency: 'object', amount: 'string',
+    //   // ...
+    // },
+    // cards: {
+    //   cardNumber: 'string',
+    // },
+  };
 
   // --- Public API methods (return SerializedSandboxData for JSON-safe responses) ---
 
@@ -149,11 +183,33 @@ export class SandboxService {
     const sandbox = this.getSandboxInternal(sandboxId);
 
     if (updateDto.entities) {
-      for (const [entityType, operations] of Object.entries(updateDto.entities)) {
-        const collection = sandbox.entities[entityType];
-        if (!collection) continue;
+      const entries = Object.entries(updateDto.entities);
 
-        // Add new entities
+      // --- Pass 1: Validate everything before any mutations ---
+      const validOps = new Set(['add', 'update', 'remove']);
+      for (const [entityType, operations] of entries) {
+        const collection = sandbox.entities[entityType];
+        if (!collection) {
+          throw new BadRequestException(`Unknown entity type: '${entityType}'`);
+        }
+
+        const unknownOps = Object.keys(operations).filter(k => !validOps.has(k));
+        if (unknownOps.length > 0) {
+          throw new BadRequestException(
+            `Unknown operation(s) in '${entityType}': ${unknownOps.map(k => `'${k}'`).join(', ')}. Valid operations are: add, update, remove`,
+          );
+        }
+
+        if (operations.add) {
+          this.validateEntityShape(entityType, operations.add);
+          this.validateUniqueFields(entityType, collection, operations.add);
+        }
+      }
+
+      // --- Pass 2: Apply all mutations (validation already passed) ---
+      for (const [entityType, operations] of entries) {
+        const collection = sandbox.entities[entityType];
+
         if (operations.add) {
           for (const entity of operations.add) {
             const primaryKey = this.getPrimaryKey(entityType, entity);
@@ -161,17 +217,17 @@ export class SandboxService {
           }
         }
 
-        // Update existing entities (partial merge)
         if (operations.update) {
-          for (const [key, updates] of Object.entries(operations.update)) {
+          for (const [key, updates] of Object.entries(
+            operations.update as Record<string, any>,
+          )) {
             const existing = collection.get(key);
             if (existing) {
-              collection.set(key, { ...existing, ...updates });
+              collection.set(key, { ...existing, ...(updates as object) });
             }
           }
         }
 
-        // Remove entities
         if (operations.remove) {
           for (const key of operations.remove) {
             collection.delete(key);
@@ -237,14 +293,76 @@ export class SandboxService {
     };
   }
 
-  // {{PRIMARY_KEY_MAP}}
-  // Map entity types to their primary key field names.
-  // Generated from the identified entities during parsing.
+  private validateEntityShape(entityType: string, entities: any[]): void {
+    const schema = this.entitySchemas[entityType];
+    if (!schema) {
+      throw new BadRequestException(`Unknown entity type: '${entityType}'`);
+    }
+
+    for (let i = 0; i < entities.length; i++) {
+      const entity = entities[i];
+      if (typeof entity !== 'object' || entity === null) {
+        throw new BadRequestException(
+          `${entityType}[${i}]: expected an object, got ${typeof entity}`,
+        );
+      }
+      for (const [field, expectedType] of Object.entries(schema)) {
+        if (!(field in entity) || entity[field] === undefined) {
+          throw new BadRequestException(
+            `${entityType}[${i}]: missing required field '${field}'`,
+          );
+        }
+        const actualType = typeof entity[field];
+        // Allow null for any field (nullable types)
+        if (entity[field] !== null && actualType !== expectedType) {
+          throw new BadRequestException(
+            `${entityType}[${i}]: field '${field}' expected ${expectedType}, got ${actualType}`,
+          );
+        }
+      }
+    }
+  }
+
+  private validateUniqueFields(
+    entityType: string,
+    collection: Map<string, any>,
+    newEntities: any[],
+  ): void {
+    const uniqueFields = this.uniqueFieldsMap[entityType];
+    if (!uniqueFields) return;
+
+    const existingEntities = Array.from(collection.values());
+
+    for (const field of uniqueFields) {
+      const existingSet = new Set<string>();
+      for (const entity of existingEntities) {
+        if (entity[field] != null) {
+          existingSet.add(String(entity[field]));
+        }
+      }
+
+      const batchSet = new Set<string>();
+      for (const entity of newEntities) {
+        if (entity[field] == null) continue;
+        const value = String(entity[field]);
+
+        if (existingSet.has(value)) {
+          throw new ConflictException(
+            `Entity with ${field} '${value}' already exists in ${entityType}`,
+          );
+        }
+        if (batchSet.has(value)) {
+          throw new ConflictException(
+            `Duplicate ${field} '${value}' within the same add batch for ${entityType}`,
+          );
+        }
+        batchSet.add(value);
+      }
+    }
+  }
+
   private getPrimaryKey(entityType: string, entity: any): string {
-    const keyMap: Record<string, string> = {
-      // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
-    };
-    const keyField = keyMap[entityType];
+    const keyField = this.primaryKeyMap[entityType];
     return keyField ? String(entity[keyField]) : entity.id || uuidv4();
   }
 
@@ -272,7 +390,9 @@ export class SandboxService {
 
 **Placeholders:**
 - `{{SEED_ENTITIES_BLOCK}}` - Replace `return {}` with entity Maps populated from parsed API responses. Each entity's fields are extracted and merged from all endpoints where that entity appears.
-- `{{PRIMARY_KEY_MAP}}` - Replace the empty `keyMap` object with mappings from entity type names to their primary key field names.
+- `{{PRIMARY_KEY_MAP}}` - Replace the empty `primaryKeyMap` object with mappings from entity type names to their primary key field names.
+- `{{UNIQUE_FIELDS_MAP}}` - Replace the empty `uniqueFieldsMap` object with entity types mapped to their unique field names (typically includes primary key and any natural keys like `taxNo`).
+- `{{ENTITY_SCHEMAS}}` - Replace the empty `entitySchemas` object with required fields per entity type, derived from entity interfaces. Each field maps to its `typeof` type (`'string'`, `'number'`, `'boolean'`, `'object'`).
 </sandbox_service_template>
 
 <sandbox_controller_template>
@@ -367,18 +487,30 @@ export class CreateSandboxDto {
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsObject } from 'class-validator';
 
-export class EntityOperationsDto {
-  add?: any[];
-  update?: Record<string, any>;
-  remove?: string[];
-}
+// IMPORTANT: Do NOT use @ValidateNested() + @Type(() => EntityOperationsDto) on
+// Record<string, EntityOperationsDto>. class-transformer treats the Record itself
+// as the DTO (checking keys like "customers" against DTO properties) rather than
+// validating each value. This causes "property customers should not exist" errors.
+//
+// Instead, all operation-level validation is done in SandboxService.updateSandbox():
+//   - Unknown entity types → BadRequestException
+//   - Unknown operation keys (not add/update/remove) → BadRequestException
+//   - Entity shape validation on add → BadRequestException
+//   - Uniqueness constraints on add → ConflictException
 
 export class UpdateSandboxDto {
   @ApiPropertyOptional({
-    description: 'Entity operations by entity type. Each type supports add (array of new entities), update (map of primaryKey -> partial updates), and remove (array of primary keys to delete).',
+    description:
+      'Entity operations by entity type. Each type supports add (array of new entities), update (map of primaryKey -> partial updates), and remove (array of primary keys to delete).',
     example: {
       customers: {
-        add: [{ customerCode: '999', name: 'New Customer', taxNo: '111222333' }],
+        add: [
+          {
+            customerCode: '999',
+            name: 'New Customer',
+            taxNo: '111222333',
+          },
+        ],
         update: { '1317952138': { name: 'Updated Name' } },
         remove: [],
       },
@@ -386,7 +518,7 @@ export class UpdateSandboxDto {
   })
   @IsOptional()
   @IsObject()
-  entities?: Record<string, EntityOperationsDto>;
+  entities?: Record<string, any>;
 }
 ```
 </sandbox_dtos_template>

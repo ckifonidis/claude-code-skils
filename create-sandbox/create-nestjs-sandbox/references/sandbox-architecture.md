@@ -92,14 +92,38 @@ interface SerializedSandboxData {
 </sandbox_data_structure>
 
 <sandbox_service_pattern>
-The SandboxService manages the entity store and provides entity access methods.
+The SandboxService manages the entity store, provides entity access methods, and validates entities on add operations.
 Public API methods (create, get, update, list) return `SerializedSandboxData` for JSON-safe responses.
 Internal entity access methods (used by controller services) work with raw `Map`-based `SandboxData`.
+
+The service imports `BadRequestException` and `ConflictException` alongside `Injectable` and `NotFoundException` from `@nestjs/common`.
+
+The service defines three private data maps:
+1. **`primaryKeyMap`** - Maps entity type names to their primary key field names
+2. **`entitySchemas`** - Maps entity types to required fields and their `typeof` types (for shape validation on add)
+3. **`uniqueFieldsMap`** - Maps entity types to fields that must be unique within the collection
+
+See `references/entity-model.md` `<entity_validation>` section for full details on how these maps are used and why validation is at the service level (not DTO level).
 
 ```typescript
 @Injectable()
 export class SandboxService {
   private sandboxes: Map<string, SandboxData> = new Map();
+
+  // --- Data maps for validation and primary key resolution ---
+
+  private readonly primaryKeyMap: Record<string, string> = {
+    // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
+  };
+
+  private readonly entitySchemas: Record<string, Record<string, string>> = {
+    // e.g.: customers: { customerCode: 'string', name: 'string', taxNo: 'string', branch: 'object', ... }
+    // Maps each entity type to its required fields and their typeof types.
+  };
+
+  private readonly uniqueFieldsMap: Record<string, string[]> = {
+    // e.g.: customers: ['taxNo', 'customerCode'], accounts: ['account'], cards: ['cardNumber']
+  };
 
   // --- Public API methods (return SerializedSandboxData) ---
 
@@ -268,13 +292,13 @@ POST   /sandbox/:sandboxId/{controller}/{action}  → Controller-specific endpoi
 </sandbox_controller_endpoints>
 
 <update_sandbox_format>
-The PUT endpoint supports entity-level updates:
+The PUT endpoint supports entity-level updates with validation:
 
 ```json
 {
   "entities": {
     "customers": {
-      "add": [{ "customerCode": "999", "name": "New Customer", "taxNo": "111222333" }],
+      "add": [{ "customerCode": "999", "name": "New Customer", "taxNo": "111222333", ... }],
       "update": { "1317952138": { "name": "Updated Name" } },
       "remove": ["old-customer-code"]
     },
@@ -284,6 +308,21 @@ The PUT endpoint supports entity-level updates:
   }
 }
 ```
+
+**Validation behavior (service-level, two-pass):**
+
+Pass 1 validates all operations before any mutations:
+- Unknown entity type → `BadRequestException` (400)
+- Unknown operation keys (not `add`/`update`/`remove`) → `BadRequestException` (400)
+- Entity shape validation on `add` (missing required fields, wrong types) → `BadRequestException` (400)
+- Uniqueness constraint violations on `add` → `ConflictException` (409)
+
+Pass 2 applies mutations only after all validations pass:
+- `add`: Insert entities keyed by primary key
+- `update`: Shallow-merge partial updates into existing entities (uses `...(updates as object)` to avoid TS2698)
+- `remove`: Delete entities by primary key
+
+**Important TypeScript note:** When spreading `updates` from `Object.entries()`, the value is typed as `any`. The spread operator on `any` causes `TS2698: Spread types may only be created from object types`. Fix with: `{ ...existing, ...(updates as object) }`.
 
 This enables test scenarios like:
 - Adding multiple customers to test search

@@ -123,22 +123,34 @@ Generate the shared components:
 
 **Step 7: Generate Sandbox Management Module**
 
-Read `templates/sandbox-module.md` and generate:
+Read `templates/sandbox-module.md` and `references/entity-model.md` (especially `<entity_validation>`). Generate:
 
 1. **`src/sandbox/sandbox.module.ts`** - Global module exporting SandboxService
 2. **`src/sandbox/sandbox.service.ts`** - Service managing the entity store with:
+   - Three data maps: `primaryKeyMap`, `entitySchemas`, `uniqueFieldsMap` (populated from identified entities)
    - `createSandbox()` - Initialize sandbox with seed entities
    - `getSandbox()` - Return sandbox config and entity summary
-   - `updateSandbox()` - Add, update, or remove entities
+   - `updateSandbox()` - Two-pass validate-then-mutate: validates all entity types first (unknown types, unknown ops, shape, uniqueness), then applies mutations
    - `deleteSandbox()` - Remove sandbox
    - `getEntities()` - Get the full entity store for a sandbox
    - `getEntityCollection()` - Get all entities of a type
    - `getEntity()` - Get a single entity by primary key
    - `findEntities()` - Find entities matching a predicate
+   - `validateEntityShape()` - Private method checking required fields and typeof types against `entitySchemas`
+   - `validateUniqueFields()` - Private method checking uniqueness constraints against `uniqueFieldsMap`
    - `generateSeedEntities()` - Private method that extracts entity instances from parsed API responses
+   - Import `BadRequestException`, `ConflictException` from `@nestjs/common`
 3. **`src/sandbox/sandbox.controller.ts`** - REST controller with POST/GET/PUT/DELETE at `/sandboxes`
 4. **`src/sandbox/dto/create-sandbox.dto.ts`** - DTO for sandbox creation
-5. **`src/sandbox/dto/update-sandbox.dto.ts`** - DTO for sandbox updates (entity-level add/update/remove operations)
+5. **`src/sandbox/dto/update-sandbox.dto.ts`** - DTO for sandbox updates. **IMPORTANT:** Do NOT use `@ValidateNested()` or `@Type()` on `entities` field — type it as `Record<string, any>` with only `@IsOptional()` and `@IsObject()`. All validation is service-level. See `<entity_validation>` in entity-model.md.
+
+The `entitySchemas` map must be populated from the entity interfaces:
+- For each entity type, list all required (non-optional) fields and their `typeof` type
+- Types are: `'string'`, `'number'`, `'boolean'`, `'object'` (for nested objects/arrays)
+
+The `uniqueFieldsMap` must include:
+- Primary key fields for each entity type
+- Any natural keys (e.g., `taxNo` for customers)
 
 The `generateSeedEntities()` method must:
 - Extract entity instances from the parsed API response data
@@ -241,6 +253,12 @@ Before reporting completion, verify:
 - [ ] Project scaffold files generated (package.json, tsconfig, etc.)
 - [ ] **Entity interfaces generated** in `src/common/interfaces/entities.interface.ts`
 - [ ] Sandbox management module generated with entity CRUD operations
+- [ ] **Entity validation**: `entitySchemas` populated from entity interfaces, `uniqueFieldsMap` populated with unique fields, `primaryKeyMap` populated with primary key mappings
+- [ ] **Validation methods**: `validateEntityShape()` and `validateUniqueFields()` implemented
+- [ ] **Two-pass updateSandbox()**: Pass 1 validates all operations, Pass 2 applies mutations
+- [ ] **UpdateSandboxDto**: `entities` typed as `Record<string, any>` (NOT `Record<string, EntityOperationsDto>`), no `@ValidateNested`/`@Type`
+- [ ] **TypeScript safety**: `...(updates as object)` in update merge, `operations.update as Record<string, any>` in Object.entries()
+- [ ] **ValidationPipe**: `forbidNonWhitelisted: true` in main.ts
 - [ ] Each controller has its own module with controller, service, and DTOs
 - [ ] **Controller services implement entity queries** (not static response returns)
 - [ ] **Response mappers** convert entity data to exact API response format
