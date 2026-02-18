@@ -87,7 +87,7 @@ interface AccountEntity {
   // ... all fields from account/position responses
 }
 
-// The entity store holds all entities for a sandbox
+// The entity store holds all entities for a sandbox (internal, for Map-based lookups)
 interface EntityStore {
   customers: Map<string, CustomerEntity>;
   cards: Map<string, CardEntity>;
@@ -95,11 +95,24 @@ interface EntityStore {
   // Add Map for each identified entity type
 }
 
-// SandboxData now wraps the entity store
+// Internal representation (uses Maps for efficient lookups)
 interface SandboxData {
   sandboxId: string;
   createdAt: Date;
   entities: EntityStore;
+}
+
+// JSON-serializable versions (Map → Record) for API responses.
+// Map objects serialize to {} with JSON.stringify, so API return types
+// must use Record<string, any> instead of Map<string, any>.
+type SerializedEntityStore = {
+  [K in keyof EntityStore]: Record<string, any>;
+};
+
+interface SerializedSandboxData {
+  sandboxId: string;
+  createdAt: Date;
+  entities: SerializedEntityStore;
 }
 ```
 

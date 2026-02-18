@@ -64,6 +64,18 @@ interface SandboxData {
   createdAt: Date;
   entities: EntityStore;
 }
+
+// IMPORTANT: Map objects serialize to empty {} with JSON.stringify.
+// Define serialized counterparts (Map → Record) for API responses.
+type SerializedEntityStore = {
+  [K in keyof EntityStore]: Record<string, any>;
+};
+
+interface SerializedSandboxData {
+  sandboxId: string;
+  createdAt: Date;
+  entities: SerializedEntityStore;
+}
 ```
 
 **Key differences from static response storage:**
@@ -71,17 +83,27 @@ interface SandboxData {
 - Each entity type has its own Map, keyed by primary key
 - Foreign keys link related entities (e.g., `CardEntity.customerCode` → `CustomerEntity`)
 - Controller services query entities and construct responses dynamically
+
+**Serialization requirement:**
+- `Map` objects do NOT serialize to JSON — `JSON.stringify(new Map())` returns `"{}"`. NestJS uses JSON serialization for HTTP responses.
+- The service uses `Map` internally for efficient lookups (get/set/delete by key), but must convert to `Record` (plain objects) before returning from API endpoints.
+- `SandboxData` (with Maps) is the internal type. `SerializedSandboxData` (with Records) is the API return type.
+- A private `serializeSandbox()` helper converts between the two.
 </sandbox_data_structure>
 
 <sandbox_service_pattern>
-The SandboxService manages the entity store and provides entity access methods:
+The SandboxService manages the entity store and provides entity access methods.
+Public API methods (create, get, update, list) return `SerializedSandboxData` for JSON-safe responses.
+Internal entity access methods (used by controller services) work with raw `Map`-based `SandboxData`.
 
 ```typescript
 @Injectable()
 export class SandboxService {
   private sandboxes: Map<string, SandboxData> = new Map();
 
-  createSandbox(createDto: CreateSandboxDto): SandboxData {
+  // --- Public API methods (return SerializedSandboxData) ---
+
+  createSandbox(createDto: CreateSandboxDto): SerializedSandboxData {
     const sandboxId = createDto.sandboxId || uuidv4();
     const sandboxData: SandboxData = {
       sandboxId,
@@ -89,12 +111,23 @@ export class SandboxService {
       entities: this.generateSeedEntities(),
     };
     this.sandboxes.set(sandboxId, sandboxData);
-    return sandboxData;
+    return this.serializeSandbox(sandboxData);
   }
 
-  // Entity access methods used by controller services
+  getSandbox(sandboxId: string): SerializedSandboxData {
+    return this.serializeSandbox(this.getSandboxInternal(sandboxId));
+  }
+
+  listSandboxes(): SerializedSandboxData[] {
+    return Array.from(this.sandboxes.values()).map((s) =>
+      this.serializeSandbox(s),
+    );
+  }
+
+  // --- Internal entity access methods (used by controller services) ---
+
   getEntities(sandboxId: string): EntityStore {
-    return this.getSandbox(sandboxId).entities;
+    return this.getSandboxInternal(sandboxId).entities;
   }
 
   getEntityCollection<T>(sandboxId: string, entityType: string): Map<string, T> {
@@ -108,6 +141,29 @@ export class SandboxService {
 
   findEntities<T>(sandboxId: string, entityType: string, predicate: (entity: T) => boolean): T[] {
     return Array.from(this.getEntityCollection<T>(sandboxId, entityType).values()).filter(predicate);
+  }
+
+  // --- Private methods ---
+
+  private getSandboxInternal(sandboxId: string): SandboxData {
+    const sandbox = this.sandboxes.get(sandboxId);
+    if (!sandbox) {
+      throw new NotFoundException(`Sandbox ${sandboxId} not found`);
+    }
+    return sandbox;
+  }
+
+  private serializeSandbox(sandbox: SandboxData): SerializedSandboxData {
+    const entities = {} as SerializedSandboxData['entities'];
+    for (const [key, map] of Object.entries(sandbox.entities)) {
+      (entities as Record<string, Record<string, any>>)[key] =
+        Object.fromEntries(map as Map<string, any>);
+    }
+    return {
+      sandboxId: sandbox.sandboxId,
+      createdAt: sandbox.createdAt,
+      entities,
+    };
   }
 
   private generateSeedEntities(): EntityStore {
