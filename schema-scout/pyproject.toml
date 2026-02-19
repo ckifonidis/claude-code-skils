@@ -1,0 +1,17 @@
+[project]
+name = "schema-scout"
+version = "1.0.0"
+description = "Schema Scout — Explore the schema and values of any data file (XLSX, CSV, JSON)"
+requires-python = ">=3.10"
+dependencies = [
+    "openpyxl>=3.1",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
+[project.scripts]
+scout = "schema_scout.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

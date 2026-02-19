@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/vbp query:*)",
+      "Bash(.venv/bin/vbp:*)"
+    ]
+  }
+}
