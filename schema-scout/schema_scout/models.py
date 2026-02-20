@@ -17,7 +17,7 @@ class FieldStats:
     types_seen: dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     null_count: int = 0
-    unique_count: int = 0
+    unique_count: int | None = 0
     unique_values: list[Any] | None = None
     sample_values: list[Any] | None = None
     value_counts: dict[str, int] | None = None

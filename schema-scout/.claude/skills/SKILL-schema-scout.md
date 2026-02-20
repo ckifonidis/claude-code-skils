@@ -18,17 +18,11 @@ Schema Scout is a Python CLI tool that indexes data files (XLSX, CSV, JSON), det
 
 ## Setup
 
-First, locate the Schema Scout project root by finding `pyproject.toml` with `name = "schema-scout"`:
+`scout` is installed globally via `uv tool install` and available on PATH — run it directly, no venv activation needed.
 
+If `scout` is not found, install it from the project root:
 ```bash
-find . -name "pyproject.toml" -path "*/schema-scout/*" 2>/dev/null | head -1
-```
-
-The CLI is at `<project_root>/.venv/bin/scout`.
-
-If the venv doesn't exist yet, set it up:
-```bash
-cd <project_root> && uv venv && uv pip install -e .
+uv tool install --editable /path/to/schema-scout
 ```
 
 ## Workflow
@@ -138,4 +132,5 @@ scout list-paths <file_or_index> [--max-rows N]
 - Large files: default is 10,000 rows. User can increase to 100,000 with `--max-rows`
 - Index files are cached next to the source file. Use `--force` to re-index
 - The tool DOES NOT upload or send any data anywhere — everything runs locally
-- Top-level columns that are entirely null are automatically pruned from the index
+- **Auto-cleanup**: Top-level null columns are pruned; XLSX overflow columns (trailing unnamed headers) are trimmed; sparse `_col_N` columns (<5% non-null) are removed
+- **Encoding repair**: Double-encoded UTF-8 strings (common from Excel/ODBC pipelines) are automatically detected and repaired (e.g., garbled Greek/Cyrillic text is restored)

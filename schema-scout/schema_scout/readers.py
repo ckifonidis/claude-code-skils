@@ -33,7 +33,15 @@ def read_xlsx(
 
     for row in ws.iter_rows(values_only=True):
         if headers is None:
-            headers = [str(h) if h is not None else f"_col_{i}" for i, h in enumerate(row)]
+            # Trim trailing unnamed headers caused by openpyxl padding
+            # rows to max_column. Find the last position with an actual
+            # header name; anything beyond that is phantom padding.
+            named_end = 0
+            for i, h in enumerate(row):
+                if h is not None:
+                    named_end = i + 1
+            trimmed = row[:named_end]
+            headers = [str(h) if h is not None else f"_col_{i}" for i, h in enumerate(trimmed)]
             continue
         if row_count >= max_rows:
             break
@@ -43,17 +51,44 @@ def read_xlsx(
     wb.close()
 
 
-def read_csv(path: Path, max_rows: int = 10_000) -> Iterator[dict[str, Any]]:
+# Encodings to try in order when reading CSV files.
+# utf-8-sig handles both UTF-8 and UTF-8 with BOM.
+# latin-1 never fails (it maps every byte 0x00-0xFF) and covers
+# most Western European CSVs exported from Excel on Windows.
+CSV_ENCODING_FALLBACKS = ("utf-8-sig", "latin-1")
+
+
+def read_csv(
+    path: Path, max_rows: int = 10_000, encoding: str | None = None,
+) -> Iterator[dict[str, Any]]:
     """Read a CSV file, yielding one dict per row.
 
     Uses csv.DictReader with automatic dialect detection.
+    Tries UTF-8 first, falls back to latin-1 for non-UTF-8 files.
+    Pass ``encoding`` to force a specific encoding.
     """
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for i, row in enumerate(reader):
-            if i >= max_rows:
-                break
-            yield dict(row)
+    encodings = (encoding,) if encoding else CSV_ENCODING_FALLBACKS
+
+    for enc in encodings:
+        try:
+            with open(path, newline="", encoding=enc) as f:
+                reader = csv.DictReader(f)
+                for i, row in enumerate(reader):
+                    if i >= max_rows:
+                        break
+                    yield dict(row)
+            # If we get here without error, we're done
+            return
+        except UnicodeDecodeError:
+            # Try next encoding
+            continue
+
+    # Should not reach here since latin-1 never raises UnicodeDecodeError,
+    # but guard against explicit encoding that fails
+    raise UnicodeDecodeError(
+        encodings[-1], b"", 0, 1,
+        f"Could not decode {path.name} with any of: {', '.join(encodings)}",
+    )
 
 
 def read_json(path: Path, max_rows: int = 10_000) -> Iterator[dict[str, Any]]:

@@ -219,7 +219,10 @@ The Claude Code skill is convenient for conversational exploration and code gene
 
 Schema Scout automatically cleans up noisy data:
 
-- **Empty columns are pruned**: Top-level columns that are 100% null (common in XLSX files with trailing empty columns) are automatically removed from the schema and index.
+- **XLSX overflow columns trimmed**: When openpyxl pads rows to the sheet's max column count (e.g., one wide JSON response spills across hundreds of extra cells), Schema Scout trims trailing unnamed headers at read time. Only columns up to the last real header are kept.
+- **Sparse unnamed columns pruned**: Any remaining `_col_N` columns with <5% non-null values are pruned as overflow artifacts. This safety net works across all formats, not just XLSX.
+- **Empty columns pruned**: Top-level columns that are 100% null are automatically removed from the schema and index.
+- **Double-encoded UTF-8 repaired**: Text that was garbled by encoding pipelines (UTF-8 bytes misread as Windows-1252 — common with Excel, ODBC, and older Windows tools) is automatically detected and repaired. For example, `Î•Î¥Î¡Î©` becomes `ΕΥΡΩ`.
 - **No absolute paths**: Index files store only the source filename, not your full filesystem path, so they're safe to share.
 
 **Privacy note:** Index files contain sample values and unique value lists extracted from your data. If your data contains PII (IP addresses, usernames, customer IDs, etc.), those samples will appear in the index. Be mindful of this when sharing index files.
@@ -259,7 +262,7 @@ Schema Scout supports `.xlsx`, `.csv`, `.json`, `.ndjson`, and `.jsonl`. Other f
 Provide the full path to the file, or run `scout` from the directory containing the file.
 
 **Too many columns showing as `_col_N`**
-This means the XLSX file has columns without headers. Schema Scout auto-generates names like `_col_0`, `_col_1`, etc. for unnamed columns. Note: top-level columns that are entirely null are automatically pruned from the schema and index, so empty trailing columns won't clutter the output.
+This typically meant openpyxl was padding rows to the sheet's max column width. Schema Scout now handles this automatically: trailing unnamed headers are trimmed at read time, and any sparse `_col_N` columns (<5% non-null) are pruned during analysis. If you still see `_col_N` columns, they contain real data in at least 5% of rows.
 
 **Index file is too large**
 The index file size depends on the number of unique field paths and values. If it's too large, reduce `--max-rows` or the data may simply have many unique paths.
