@@ -22,23 +22,55 @@ export class SandboxModule {}
 // EntityStore holds all entity collections for a sandbox.
 // Each entity type is a Map keyed by its primary key.
 // Used internally for efficient lookups (get/set/delete).
+// Entity types are dynamically discovered from the API data — NOT hardcoded.
 export interface EntityStore {
   [entityType: string]: Map<string, any>;
-  // Generated entity Maps go here, e.g.:
-  // customers: Map<string, CustomerEntity>;
-  // cards: Map<string, CardEntity>;
-  // accounts: Map<string, AccountEntity>;
+  // Generated entity Maps go here — one per discovered entity type.
+  // Entity type names are derived from the API data analysis.
+  // Examples (banking domain): customers, cards, accounts, loans, deposits,
+  // transactions, merchants, standingOrders, etc.
 }
+
+// SandboxMetadata holds dynamic relational lookup structures that controller
+// services use for efficient cross-entity queries and product grouping.
+// This is internal-only data — NOT included in serialized API responses.
+//
+// {{METADATA_INTERFACE_BLOCK}}
+// The SandboxMetadata interface uses three dynamic structures that are
+// populated based on whatever entities and relationships are discovered:
+//
+// export interface SandboxMetadata {
+//   // Maps root entity key → { childEntityType → childEntityKeys[] }
+//   // Built from discovered parent-child relationships
+//   parentChildRelations: Map<string, Record<string, string[]>>;
+//
+//   // Maps entity type name → Map<entityKey, typeInfo>
+//   // Built for entity types that have type/category classifications
+//   typeGroupings: Record<string, Map<string, any>>;
+//
+//   // Maps view name → Map<entityKey, preComputedData>
+//   // Built for entities that appear in different shapes in aggregation responses
+//   preComputedViews: Record<string, Map<string, any>>;
+// }
+//
+// Design rules:
+// 1. parentChildRelations maps the root entity's primary key to child type → key arrays
+// 2. typeGroupings keys by the entity type name, values map entity key → type info
+// 3. preComputedViews keys by view name, values map entity key → pre-computed data
+// 4. All Maps use string keys for consistency
+// 5. All three structures are dynamically populated — no hardcoded entity types
 
 export interface SandboxData {
   sandboxId: string;
   createdAt: Date;
   entities: EntityStore;
+  metadata: SandboxMetadata;
 }
 
 // JSON-serializable versions (Map → Record) for API responses.
 // Map objects serialize to {} with JSON.stringify, so all API
 // return types must use these instead of the Map-based versions.
+// IMPORTANT: metadata is NOT included in serialized output.
 export type SerializedEntityStore = {
   [K in keyof EntityStore]: Record<string, any>;
 };
@@ -53,47 +85,41 @@ export interface SerializedSandboxData {
 ```typescript
 // src/common/interfaces/entities.interface.ts
 // {{ENTITY_INTERFACES_BLOCK}}
-// Generate one interface per identified entity type.
+// Generate one interface per dynamically identified entity type.
+// Entity types are NOT predetermined — they are discovered from the API data.
 // Each interface has:
 // - A primary key field (used as the Map key)
 // - Foreign key fields linking to parent entities
 // - All data fields merged from every API response containing this entity
 //
-// Example:
+// Example (banking domain — actual types depend on API data):
 //
 // export interface CustomerEntity {
 //   customerCode: string;       // Primary key
 //   name: string;
 //   taxNo: string;
-//   branch: { code: string; name: string; /* ... */ };
+//   branch: { code: string; name: string; };
 //   type: string;
 //   activityStatus: string;
-//   // ... all fields from customer search response items
 // }
 //
 // export interface CardEntity {
 //   cardNumber: string;         // Primary key
-//   customerCode: string;       // Foreign key → CustomerEntity
+//   customerCode: string;       // Foreign key → parent entity
 //   cardStatus: string;
-//   cardStatusDescription: string;
 //   productName: string;
-//   productCode: string;
-//   expirationDate: string;
-//   // ... merged fields from fetchCreditCardFullData, fetchDetails, position subProducts
-//   limits?: { /* ... */ };
-//   security?: { /* ... */ };
-//   availableActions?: Record<string, string>;
+//   // ... merged fields from all card-related endpoints
 // }
 //
-// export interface AccountEntity {
-//   account: string;            // Primary key
-//   customerCode: string;       // Foreign key → CustomerEntity
-//   description: string;
-//   currency: { code: string | null; name: string };
-//   amount: string;
-//   branch: string;
-//   // ... all fields from position product sub-products
+// export interface LoanEntity {
+//   loanAccountKey: string;     // Primary key
+//   customerCode: string;       // Foreign key → parent entity
+//   loanType: string;
+//   balance: string;
+//   // ... fields from loan-related endpoints
 // }
+//
+// ... generate interfaces for ALL discovered entity types
 ```
 
 **Entity interface generation rules:**
@@ -103,6 +129,7 @@ export interface SerializedSandboxData {
 4. Use optional (`?`) for fields that only appear in some responses
 5. Preserve exact field names and nesting from the original API data
 6. Nested objects (like `limits`, `security`, `branch`) become inline type definitions or separate interfaces
+7. Entity type names are derived from the API data context — do NOT assume fixed types
 </sandbox_store_interfaces_template>
 
 <sandbox_service_template>
@@ -114,6 +141,7 @@ import {
   SandboxData,
   SerializedSandboxData,
   EntityStore,
+  SandboxMetadata,
 } from '../common/interfaces/sandbox-store.interface';
 import { CreateSandboxDto } from './dto/create-sandbox.dto';
 import { UpdateSandboxDto } from './dto/update-sandbox.dto';
@@ -124,35 +152,31 @@ export class SandboxService {
 
   // {{UNIQUE_FIELDS_MAP}}
   // Maps entity types to fields that must be unique within the collection.
-  // Used by validateUniqueFields() to prevent duplicate entries.
+  // Populated based on discovered entities. Used by validateUniqueFields().
   private readonly uniqueFieldsMap: Record<string, string[]> = {
-    // e.g.: customers: ['taxNo', 'customerCode'], accounts: ['account'], cards: ['cardNumber']
+    // Dynamically generated per entity type, e.g.:
+    // entityTypeA: ['primaryKeyField', 'naturalKeyField'],
+    // entityTypeB: ['primaryKeyField'],
   };
 
   // {{PRIMARY_KEY_MAP}}
   // Maps entity type names to their primary key field names.
+  // Populated based on discovered entities.
   private readonly primaryKeyMap: Record<string, string> = {
-    // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
+    // Dynamically generated, e.g.: entityTypeA: 'entityId', entityTypeB: 'entityKey'
   };
 
   // {{ENTITY_SCHEMAS}}
   // Maps each entity type to its required fields and their typeof types.
-  // Used by validateEntityShape() to check entities on add operations.
-  // Derive from the entity interfaces in entities.interface.ts.
+  // Populated based on discovered entities. Used by validateEntityShape().
   private readonly entitySchemas: Record<string, Record<string, string>> = {
-    // e.g.:
-    // customers: {
-    //   customerCode: 'string', name: 'string', taxNo: 'string',
-    //   branch: 'object', type: 'string', activityStatus: 'string',
-    //   // ... all required (non-optional) fields
+    // Dynamically generated per entity type, e.g.:
+    // entityTypeA: {
+    //   entityId: 'string', name: 'string', status: 'string',
+    //   details: 'object',
     // },
-    // accounts: {
-    //   account: 'string', accountNoCD: 'string', branch: 'string',
-    //   currency: 'object', amount: 'string',
-    //   // ...
-    // },
-    // cards: {
-    //   cardNumber: 'string',
+    // entityTypeB: {
+    //   entityKey: 'string', parentKey: 'string',
     // },
   };
 
@@ -165,10 +189,12 @@ export class SandboxService {
       throw new Error(`Sandbox ${sandboxId} already exists`);
     }
 
+    const { entities, metadata } = this.generateSeedData();
     const sandboxData: SandboxData = {
       sandboxId,
       createdAt: new Date(),
-      entities: this.generateSeedEntities(),
+      entities,
+      metadata,
     };
 
     this.sandboxes.set(sandboxId, sandboxData);
@@ -270,6 +296,12 @@ export class SandboxService {
     return Array.from(this.getEntityCollection<T>(sandboxId, entityType).values()).filter(predicate);
   }
 
+  // Get the metadata for a sandbox (used by controller services for
+  // relational lookups, type groupings, and pre-computed views)
+  getMetadata(sandboxId: string): SandboxMetadata {
+    return this.getSandboxInternal(sandboxId).metadata;
+  }
+
   // --- Private methods ---
 
   private getSandboxInternal(sandboxId: string): SandboxData {
@@ -366,33 +398,60 @@ export class SandboxService {
     return keyField ? String(entity[keyField]) : entity.id || uuidv4();
   }
 
-  private generateSeedEntities(): EntityStore {
-    // {{SEED_ENTITIES_BLOCK}}
-    // Extract entity instances from the parsed API sample responses.
-    // Each entity type is populated as a Map<primaryKey, entityData>.
+  private generateSeedData(): { entities: EntityStore; metadata: SandboxMetadata } {
+    // {{SEED_DATA_BLOCK}}
+    // Extract entity instances AND metadata from parsed API sample responses.
+    // Entity types are dynamically determined from the API data.
     //
-    // Example:
-    // const customers = new Map<string, any>();
-    // customers.set('1317952138', { customerCode: '1317952138', name: '...', taxNo: '140700917', ... });
+    // Part 1: Entity Maps (one per discovered entity type, keyed by primary key)
+    // const entityTypeA = new Map<string, any>();
+    // entityTypeA.set('key1', { primaryKeyField: 'key1', name: '...', ... });
     //
-    // const cards = new Map<string, any>();
-    // cards.set('5278900043068407', { cardNumber: '5278900043068407', customerCode: '1317952138', ... });
+    // const entityTypeB = new Map<string, any>();
+    // entityTypeB.set('key2', { primaryKeyField: 'key2', parentKey: 'key1', ... });
     //
-    // const accounts = new Map<string, any>();
-    // accounts.set('81751218256', { account: '81751218256', customerCode: '1317952138', ... });
+    // Part 2: Metadata (dynamic relational structures)
+    // const parentChildRelations = new Map<string, Record<string, string[]>>();
+    // parentChildRelations.set('key1', {
+    //   entityTypeB: ['key2', 'key3'],
+    //   entityTypeC: ['key4'],
+    //   // ... one entry per discovered child type
+    // });
     //
-    // return { customers, cards, accounts };
+    // const typeGroupings: Record<string, Map<string, any>> = {};
+    // typeGroupings['entityTypeB'] = new Map([
+    //   ['key2', { code: '102', description: 'Type A' }],
+    //   ['key3', { code: '100', description: 'Type B' }],
+    // ]);
+    //
+    // const preComputedViews: Record<string, Map<string, any>> = {};
+    // preComputedViews['entityTypeBPositions'] = new Map([
+    //   ['key2', { /* pre-computed sub-product data */ }],
+    // ]);
+    //
+    // return {
+    //   entities: { entityTypeA, entityTypeB, entityTypeC, ... },
+    //   metadata: { parentChildRelations, typeGroupings, preComputedViews },
+    // };
 
-    return {};
+    return {
+      entities: {},
+      metadata: {
+        parentChildRelations: new Map(),
+        typeGroupings: {},
+        preComputedViews: {},
+      },
+    };
   }
 }
 ```
 
 **Placeholders:**
-- `{{SEED_ENTITIES_BLOCK}}` - Replace `return {}` with entity Maps populated from parsed API responses. Each entity's fields are extracted and merged from all endpoints where that entity appears.
-- `{{PRIMARY_KEY_MAP}}` - Replace the empty `primaryKeyMap` object with mappings from entity type names to their primary key field names.
-- `{{UNIQUE_FIELDS_MAP}}` - Replace the empty `uniqueFieldsMap` object with entity types mapped to their unique field names (typically includes primary key and any natural keys like `taxNo`).
-- `{{ENTITY_SCHEMAS}}` - Replace the empty `entitySchemas` object with required fields per entity type, derived from entity interfaces. Each field maps to its `typeof` type (`'string'`, `'number'`, `'boolean'`, `'object'`).
+- `{{SEED_DATA_BLOCK}}` - Replace `return { entities: {}, metadata: { ... } }` with entity Maps AND metadata populated from parsed API responses. Entity types are dynamically determined. Metadata includes: (1) `parentChildRelations` — root entity key to child type → child key arrays, (2) `typeGroupings` — entity type name to entity key → type info, (3) `preComputedViews` — view name to entity key → pre-computed data.
+- `{{PRIMARY_KEY_MAP}}` - Replace the empty `primaryKeyMap` object with mappings from discovered entity type names to their primary key field names.
+- `{{UNIQUE_FIELDS_MAP}}` - Replace the empty `uniqueFieldsMap` object with discovered entity types mapped to their unique field names.
+- `{{ENTITY_SCHEMAS}}` - Replace the empty `entitySchemas` object with required fields per discovered entity type.
+- `{{METADATA_INTERFACE_BLOCK}}` - Replace the commented example in `sandbox-store.interface.ts` with the actual `SandboxMetadata` interface (always uses the three dynamic structures: `parentChildRelations`, `typeGroupings`, `preComputedViews`).
 </sandbox_service_template>
 
 <sandbox_controller_template>
@@ -489,8 +548,8 @@ import { IsOptional, IsObject } from 'class-validator';
 
 // IMPORTANT: Do NOT use @ValidateNested() + @Type(() => EntityOperationsDto) on
 // Record<string, EntityOperationsDto>. class-transformer treats the Record itself
-// as the DTO (checking keys like "customers" against DTO properties) rather than
-// validating each value. This causes "property customers should not exist" errors.
+// as the DTO (checking keys like entity type names against DTO properties) rather than
+// validating each value. This causes "property {entityType} should not exist" errors.
 //
 // Instead, all operation-level validation is done in SandboxService.updateSandbox():
 //   - Unknown entity types → BadRequestException
@@ -501,17 +560,17 @@ import { IsOptional, IsObject } from 'class-validator';
 export class UpdateSandboxDto {
   @ApiPropertyOptional({
     description:
-      'Entity operations by entity type. Each type supports add (array of new entities), update (map of primaryKey -> partial updates), and remove (array of primary keys to delete).',
+      'Entity operations by entity type. Each type supports add (array of new entities), update (map of primaryKey -> partial updates), and remove (array of primary keys to delete). Entity type names match the dynamically discovered types.',
     example: {
-      customers: {
+      entityTypeA: {
         add: [
           {
-            customerCode: '999',
-            name: 'New Customer',
-            taxNo: '111222333',
+            primaryKeyField: '999',
+            name: 'New Entity',
+            naturalKey: '111222333',
           },
         ],
-        update: { '1317952138': { name: 'Updated Name' } },
+        update: { 'existingKey': { name: 'Updated Name' } },
         remove: [],
       },
     },

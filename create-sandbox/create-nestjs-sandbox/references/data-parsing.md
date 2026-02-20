@@ -39,13 +39,13 @@ Where:
 3. Split remaining path into segments
 4. Map segments to `{api}/{controller}/{action}`
 
-**Examples from banking APIs:**
+**Examples from banking APIs (illustrative — actual entities are discovered from the data):**
 - `.../apiCra/customer/SimpleSearch` → api: `apiCra`, controller: `customer`, action: `SimpleSearch`
 - `.../cosmosCraApi/position/GetCustomerProducts` → api: `cosmosCraApi`, controller: `position`, action: `GetCustomerProducts`
 - `.../apiOtherServices/cards/fetchCreditCardFullData` → api: `apiOtherServices`, controller: `cards`, action: `fetchCreditCardFullData`
 - `.../apiOtherServices/cards/fetchTransactions` → api: `apiOtherServices`, controller: `cards`, action: `fetchTransactions` (same controller, different action)
-- `.../apiOtherServices/cards/fetchDetails` → api: `apiOtherServices`, controller: `cards`, action: `fetchDetails`
-- `.../apiOtherServices/cards/fetchLoggingTransactions` → api: `apiOtherServices`, controller: `cards`, action: `fetchLoggingTransactions`
+- `.../apiLending/loans/GetLoanDetails` → api: `apiLending`, controller: `loans`, action: `GetLoanDetails`
+- `.../apiAccounts/deposits/GetBalances` → api: `apiAccounts`, controller: `deposits`, action: `GetBalances`
 
 **Controller grouping rule:** Endpoints sharing the same controller segment (middle path component) belong to the same NestJS controller. Each unique controller value produces one controller module.
 

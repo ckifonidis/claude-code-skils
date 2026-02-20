@@ -22,9 +22,9 @@ Identify each API call block by looking for URL patterns (lines starting with `h
 For each API call block:
 1. Strip the base URL (protocol + host + port) and environment-specific prefix (e.g., `/CBSTESTPLEX/`)
 2. Split the remaining path into segments and map to `{api}/{controller}/{action}`:
-   - **api** - The API group identifier (e.g., `apiCra`, `cosmosCraApi`, `apiOtherServices`)
-   - **controller** - The resource/entity (e.g., `customer`, `position`, `cards`) → becomes the NestJS controller
-   - **action** - The specific operation (e.g., `SimpleSearch`, `fetchCreditCardFullData`) → becomes the endpoint method
+   - **api** - The API group identifier
+   - **controller** - The resource/entity → becomes the NestJS controller
+   - **action** - The specific operation → becomes the endpoint method
 3. Parse the request payload structure (field names, types, nesting)
 4. Parse the response payload structure (field names, types, nesting)
 5. Record the endpoint: `{ api, controller, action, url, requestPayload, responsePayload }`
@@ -38,63 +38,67 @@ If a URL does **not** clearly fit the `{api}/{controller}/{action}` three-segmen
 
 Do NOT guess. Always confirm with the user when the pattern does not match.
 
-Group endpoints by controller. Example output:
+Group endpoints by controller. Example output (entity types depend on what's discovered in the data):
 ```
 controllers:
-  customer:
-    - api: apiCra, action: simpleSearch, requestFields: [taxNo, lifeCycleStatus, ...], responseFields: [items[...], moreData, ...]
-  position:
-    - api: cosmosCraApi, action: getCustomerProducts, requestFields: [customerCode, doNotFetchCards], responseFields: [productGroups[...], ...]
-  cards:
-    - api: apiOtherServices, action: fetchCreditCardFullData, ...
-    - api: apiOtherServices, action: fetchLoggingTransactions, ...
-    - api: apiOtherServices, action: fetchDetails, ...
-    - api: apiOtherServices, action: fetchTransactions, ...
+  {controller-a}:
+    - api: {apiGroup}, action: {action1}, requestFields: [...], responseFields: [...]
+  {controller-b}:
+    - api: {apiGroup}, action: {action2}, requestFields: [...], responseFields: [...]
+  {controller-c}:
+    - api: {apiGroup}, action: {action3}, ...
+    - api: {apiGroup}, action: {action4}, ...
 ```
 
 **Step 3: Identify Entities and Relationships**
 
-Read `references/entity-model.md`. Analyze all parsed endpoints to identify domain entities:
+Read `references/entity-model.md`. Analyze all parsed endpoints to identify domain entities dynamically. Do NOT assume any specific entity types — discover them from the data:
 
 1. **Find recurring identifiers** across request parameters and response fields:
-   - Request lookup keys (e.g., `customerCode`, `cardNumber`, `taxNo`)
-   - Response record identifiers (e.g., `customerCode` in search results, `cardNumber` in card details)
+   - Request lookup keys (e.g., `customerCode`, `cardNumber`, `accountNo`, `loanId`, `branchCode`)
+   - Response record identifiers (e.g., unique IDs in search results, detail responses)
 
-2. **Define entity types** from the recurring identifiers:
+2. **Define entity types dynamically** from the recurring identifiers:
    ```
    entities:
-     Customer:
-       primaryKey: customerCode
-       sources: [customer/simpleSearch response items]
-       fields: [name, taxNo, branch, type, activityStatus, ...]
+     {EntityTypeA}:
+       primaryKey: {fieldName}
+       sources: [{endpoint1} response items]
+       fields: [field1, field2, field3, ...]
 
-     Card:
-       primaryKey: cardNumber
-       foreignKeys: [customerCode → Customer]
-       sources: [cards/fetchCreditCardFullData, cards/fetchDetails, position/getCustomerProducts subProducts]
-       fields: [cardStatus, productName, limits, security, expirationDate, ...]
+     {EntityTypeB}:
+       primaryKey: {fieldName}
+       foreignKeys: [{parentKeyField} → {EntityTypeA}]
+       sources: [{endpoint2}, {endpoint3} response data]
+       fields: [field1, field2, field3, ...]
 
-     Account:
-       primaryKey: account
-       foreignKeys: [customerCode → Customer]
-       sources: [position/getCustomerProducts subProducts]
-       fields: [description, currency, amount, branch, ...]
+     {EntityTypeC}:
+       primaryKey: {fieldName}
+       foreignKeys: [{parentKeyField} → {EntityTypeA}]
+       sources: [{endpoint4} sub-products]
+       fields: [field1, field2, ...]
    ```
 
 3. **Identify the root entity** - the entity that others reference. Use `AskUserQuestion` to confirm:
    - Present the candidate entities and their relationships
    - Ask: "Which is the root/base entity that others relate to?"
-   - Example: "Customer appears to be the root entity - Cards and Accounts belong to a Customer. Is this correct?"
 
 4. **Map relationships** between entities:
-   - One-to-many: Customer → Cards, Customer → Accounts
+   - One-to-many: Parent entity → Child entities
    - Lookup keys: which request fields map to which entity primary keys
 
-5. **Classify each endpoint** by its query pattern:
-   - **Search**: Filters entities by criteria (e.g., `customer/simpleSearch` filters customers by `taxNo`)
-   - **Lookup**: Fetches a single entity by primary key (e.g., `cards/fetchCreditCardFullData` by `cardNumber`)
-   - **Aggregation**: Combines multiple entity types (e.g., `position/getCustomerProducts` joins customer's accounts + cards)
-   - **List by parent**: Lists child entities of a parent (e.g., `cards/fetchTransactions` lists transactions for a card)
+5. **Identify metadata requirements** for cross-entity queries:
+   - **Parent-child relations**: Which child entity keys belong to which parent? → populate `parentChildRelations`
+   - **Type grouping Maps**: Are entities grouped by type/category in aggregation responses? → populate `typeGroupings` for relevant entity types
+   - **Pre-computed view data**: Do aggregation endpoints return entity data in a different format? → populate `preComputedViews`
+   - See `references/entity-model.md` `<metadata_system>` for full details
+
+6. **Classify each endpoint** by its query pattern:
+   - **Search**: Filters entities by criteria, may use metadata for parent-child ownership checks
+   - **Lookup**: Fetches a single entity by primary key
+   - **Aggregation**: Uses metadata for cross-entity lookups and type grouping
+   - **List by parent**: Lists child entities with optional date filtering
+   - **Related entity lookup**: Uses related entity fields for filtering
 
 **Step 4: Determine Output Directory**
 
@@ -117,8 +121,8 @@ Read `templates/project-scaffold.md` and generate:
 Generate the shared components:
 
 1. **`src/common/dto/api-header.dto.ts`** - Shared API header DTO with `@ApiProperty()` decorators, inferred from the `header` field in the request data
-2. **`src/common/interfaces/sandbox-store.interface.ts`** - TypeScript interfaces for `SandboxData` and `EntityStore`
-3. **`src/common/interfaces/entities.interface.ts`** - TypeScript interfaces for each identified entity type (`CustomerEntity`, `CardEntity`, `AccountEntity`, etc.) with primary keys, foreign keys, and all merged fields
+2. **`src/common/interfaces/sandbox-store.interface.ts`** - TypeScript interfaces for `EntityStore`, `SandboxMetadata`, `SandboxData`, and `SerializedSandboxData`. The `SandboxMetadata` interface uses three dynamic structures: `parentChildRelations`, `typeGroupings`, and `preComputedViews` (see `<metadata_system>` in entity-model.md)
+3. **`src/common/interfaces/entities.interface.ts`** - TypeScript interfaces for each **dynamically identified** entity type with primary keys, foreign keys, and all merged fields. Do NOT hardcode specific entity types — generate interfaces based on what was discovered in Step 3.
 4. **`src/common/decorators/sandbox-id.decorator.ts`** - Optional custom decorator for sandboxId extraction
 
 **Step 7: Generate Sandbox Management Module**
@@ -127,7 +131,7 @@ Read `templates/sandbox-module.md` and `references/entity-model.md` (especially 
 
 1. **`src/sandbox/sandbox.module.ts`** - Global module exporting SandboxService
 2. **`src/sandbox/sandbox.service.ts`** - Service managing the entity store with:
-   - Three data maps: `primaryKeyMap`, `entitySchemas`, `uniqueFieldsMap` (populated from identified entities)
+   - Three data maps: `primaryKeyMap`, `entitySchemas`, `uniqueFieldsMap` (populated from **dynamically identified** entities)
    - `createSandbox()` - Initialize sandbox with seed entities
    - `getSandbox()` - Return sandbox config and entity summary
    - `updateSandbox()` - Two-pass validate-then-mutate: validates all entity types first (unknown types, unknown ops, shape, uniqueness), then applies mutations
@@ -136,27 +140,29 @@ Read `templates/sandbox-module.md` and `references/entity-model.md` (especially 
    - `getEntityCollection()` - Get all entities of a type
    - `getEntity()` - Get a single entity by primary key
    - `findEntities()` - Find entities matching a predicate
+   - `getMetadata()` - Get the metadata (parentChildRelations, typeGroupings, preComputedViews)
    - `validateEntityShape()` - Private method checking required fields and typeof types against `entitySchemas`
    - `validateUniqueFields()` - Private method checking uniqueness constraints against `uniqueFieldsMap`
-   - `generateSeedEntities()` - Private method that extracts entity instances from parsed API responses
+   - `generateSeedData()` - Private method that returns `{ entities, metadata }` extracted from parsed API responses. Entities and metadata structures are built dynamically based on discovered entity types.
    - Import `BadRequestException`, `ConflictException` from `@nestjs/common`
 3. **`src/sandbox/sandbox.controller.ts`** - REST controller with POST/GET/PUT/DELETE at `/sandboxes`
 4. **`src/sandbox/dto/create-sandbox.dto.ts`** - DTO for sandbox creation
 5. **`src/sandbox/dto/update-sandbox.dto.ts`** - DTO for sandbox updates. **IMPORTANT:** Do NOT use `@ValidateNested()` or `@Type()` on `entities` field — type it as `Record<string, any>` with only `@IsOptional()` and `@IsObject()`. All validation is service-level. See `<entity_validation>` in entity-model.md.
 
-The `entitySchemas` map must be populated from the entity interfaces:
+The `entitySchemas` map must be populated from the **dynamically identified** entity interfaces:
 - For each entity type, list all required (non-optional) fields and their `typeof` type
 - Types are: `'string'`, `'number'`, `'boolean'`, `'object'` (for nested objects/arrays)
 
 The `uniqueFieldsMap` must include:
 - Primary key fields for each entity type
-- Any natural keys (e.g., `taxNo` for customers)
+- Any natural keys identified from the data
 
-The `generateSeedEntities()` method must:
-- Extract entity instances from the parsed API response data
-- Store each entity in its Map keyed by primary key
-- Link entities via foreign keys (e.g., set `customerCode` on each card entity)
-- Merge fields from multiple endpoints when the same entity appears in different responses
+The `generateSeedData()` method must return `{ entities, metadata }`:
+- **Entities**: Extract entity instances from parsed API response data, store in Maps keyed by primary key, link via foreign keys, merge fields from multiple endpoints
+- **Metadata**: Generate alongside entities from the same seed data:
+  - `parentChildRelations`: Map each root entity's key to a Record of child entity type → child key arrays
+  - `typeGroupings`: For entity types with type/category info, map entity keys to their type data
+  - `preComputedViews`: For entities appearing in different shapes in aggregation responses, store pre-computed fragments
 
 **Step 8: Generate Controller Modules**
 
@@ -173,11 +179,12 @@ Read `templates/controller-module.md`. For **each controller** identified in Ste
    - Inject `SandboxService`
    - One handler method per endpoint action
    - Each handler implements the appropriate query pattern (from Step 3):
-     - **Search endpoints**: Use `sandboxService.findEntities()` with predicates based on request parameters
+     - **Search endpoints**: Use `sandboxService.findEntities()` with predicates; use `sandboxService.getMetadata()` and `parentChildRelations` for ownership checks
      - **Lookup endpoints**: Use `sandboxService.getEntity()` with the primary key from the request
-     - **Aggregation endpoints**: Use `sandboxService.findEntities()` across multiple entity types and combine results
-     - **List by parent endpoints**: Use `sandboxService.findEntities()` filtering by the parent's foreign key
-   - Include private response mapper methods that convert entity fields to the exact API response format
+     - **Aggregation endpoints**: Use `sandboxService.getMetadata()` for `parentChildRelations`, `typeGroupings`, and `preComputedViews`
+     - **List by parent endpoints**: Use `sandboxService.findEntities()` with optional date range filtering
+     - **Related entity lookup**: Check both direct and related keys
+   - Include private response mapper methods using `?? defaultValue` fallbacks and conditional field inclusion
    - Compute derived fields (`total`, `listCount`, `moreData`) at response time
 
 4. **Generate Controller** (`{controller}.controller.ts`):
@@ -229,7 +236,7 @@ Iterate until the build succeeds.
 **Step 12: Report to User**
 
 Present the generated service summary:
-- **Entity model**: List of identified entities, their primary keys, relationships, and which endpoints map to them
+- **Entity model**: List of dynamically identified entities, their primary keys, relationships, and which endpoints map to them
 - List of identified controllers and their endpoints (with query pattern classification)
 - Project directory structure
 - How to run: `npm run start:dev` or `docker-compose up --build`
@@ -238,7 +245,7 @@ Present the generated service summary:
   - Create sandbox: `curl -X POST http://localhost:3000/sandboxes`
   - Create sandbox (custom ID): `curl -X POST http://localhost:3000/sandboxes -H "Content-Type: application/json" -d '{"sandboxId": "my-sandbox-1"}'`
   - Call controller endpoint: `curl -X POST http://localhost:3000/sandbox/{sandboxId}/{controller}/{action}`
-  - Add entities: `curl -X PUT http://localhost:3000/sandboxes/{sandboxId} -H "Content-Type: application/json" -d '{"entities": {"customers": {"add": [...]}}}'`
+  - Add entities: `curl -X PUT http://localhost:3000/sandboxes/{sandboxId} -H "Content-Type: application/json" -d '{"entities": {"{entityType}": {"add": [...]}}}'`
 
 </process>
 
@@ -247,13 +254,13 @@ Before reporting completion, verify:
 - [ ] All API call blocks parsed from input data
 - [ ] URL segments mapped to `{api}/{controller}/{action}` (ambiguities clarified with user)
 - [ ] Controllers and endpoints correctly identified and grouped
-- [ ] **Domain entities identified** with primary keys and relationships
+- [ ] **Domain entities dynamically identified** with primary keys and relationships (no hardcoded entity types)
 - [ ] **Root entity confirmed** with user via AskUserQuestion
 - [ ] **Each endpoint classified** by query pattern (search, lookup, aggregation, list by parent)
 - [ ] Project scaffold files generated (package.json, tsconfig, etc.)
-- [ ] **Entity interfaces generated** in `src/common/interfaces/entities.interface.ts`
+- [ ] **Entity interfaces dynamically generated** in `src/common/interfaces/entities.interface.ts`
 - [ ] Sandbox management module generated with entity CRUD operations
-- [ ] **Entity validation**: `entitySchemas` populated from entity interfaces, `uniqueFieldsMap` populated with unique fields, `primaryKeyMap` populated with primary key mappings
+- [ ] **Entity validation**: `entitySchemas` populated from discovered entity interfaces, `uniqueFieldsMap` populated with discovered unique fields, `primaryKeyMap` populated with discovered primary key mappings
 - [ ] **Validation methods**: `validateEntityShape()` and `validateUniqueFields()` implemented
 - [ ] **Two-pass updateSandbox()**: Pass 1 validates all operations, Pass 2 applies mutations
 - [ ] **UpdateSandboxDto**: `entities` typed as `Record<string, any>` (NOT `Record<string, EntityOperationsDto>`), no `@ValidateNested`/`@Type`
@@ -263,7 +270,13 @@ Before reporting completion, verify:
 - [ ] **Controller services implement entity queries** (not static response returns)
 - [ ] **Response mappers** convert entity data to exact API response format
 - [ ] DTOs accurately reflect the provided API data structures
-- [ ] **Seed entities** in SandboxService extracted from sample responses with correct relationships
+- [ ] **Seed data** in SandboxService: both entities AND metadata extracted from sample responses
+- [ ] **Metadata dynamically built**: `parentChildRelations` (root key → child type → child keys), `typeGroupings` (entity type → entity key → type info), `preComputedViews` (view name → entity key → pre-computed data)
+- [ ] **Metadata excluded from API responses**: `serializeSandbox()` returns only `sandboxId`, `createdAt`, `entities`
+- [ ] **`getMetadata()` method** on SandboxService for controller services to access metadata
+- [ ] **Aggregation endpoints use metadata** structures for cross-entity lookups (not filter predicates on all entities)
+- [ ] **Response mappers** use `?? defaultValue` fallbacks, conditional field inclusion, and type conversions where needed
+- [ ] **Date range filtering** implemented for list/transaction endpoints
 - [ ] main.ts includes Swagger setup
 - [ ] Docker files generated
 - [ ] `npm run build` succeeds

@@ -55,6 +55,7 @@ export class {{Controller}}Controller {
 
 <controller_service_template>
 Controller services query the entity store and build API responses dynamically.
+Entity type names used in queries match whatever was discovered from the API data.
 
 ```typescript
 // src/controllers/{{controller}}/{{controller}}.service.ts
@@ -71,24 +72,21 @@ export class {{Controller}}Service {
   // 3. Filters/transforms entities based on request parameters
   // 4. Constructs the API response in the exact format of the original sample response
   //
-  // --- SEARCH ENDPOINT PATTERN ---
-  // For endpoints that search/filter entities (e.g., customer search):
+  // --- SEARCH ENDPOINT PATTERN (uses metadata for ownership checks) ---
+  // For endpoints that search/filter entities:
   //
-  // async simpleSearch(sandboxId: string, requestDto: any): Promise<any> {
-  //   // Query all entities of the relevant type
-  //   let results = this.sandboxService.findEntities(
-  //     sandboxId,
-  //     'customers',     // entity type
-  //     (customer: any) => {
-  //       // Filter by request parameters
-  //       if (requestDto.payload.taxNo && customer.taxNo !== requestDto.payload.taxNo) return false;
-  //       if (requestDto.payload.account) {
-  //         // Cross-entity lookup: check if customer has this account
-  //         const accounts = this.sandboxService.findEntities(
-  //           sandboxId, 'accounts',
-  //           (a: any) => a.customerCode === customer.customerCode && a.account === requestDto.payload.account,
-  //         );
-  //         if (accounts.length === 0) return false;
+  // async searchAction(sandboxId: string, requestDto: any): Promise<any> {
+  //   const metadata = this.sandboxService.getMetadata(sandboxId);
+  //   const { filterField, relatedEntityKey } = requestDto.payload;
+  //
+  //   const results = this.sandboxService.findEntities(sandboxId, 'discoveredEntityType',
+  //     (entity: any) => {
+  //       if (!filterField || entity.filterField !== filterField) return false;
+  //       // Use metadata for cross-entity ownership check
+  //       if (relatedEntityKey) {
+  //         const relations = metadata.parentChildRelations.get(entity.rootEntityKey) || {};
+  //         const childKeys = relations['relatedType'] || [];
+  //         if (!childKeys.includes(relatedEntityKey)) return false;
   //       }
   //       return true;
   //     },
@@ -96,7 +94,7 @@ export class {{Controller}}Service {
   //
   //   return {
   //     payload: {
-  //       items: results.map(c => this.toSearchItem(c)),
+  //       items: results.map(e => this.toSearchItem(e)),
   //       moreData: false,
   //       tokenType: null,
   //     },
@@ -107,59 +105,116 @@ export class {{Controller}}Service {
   // }
   //
   // --- SINGLE ENTITY LOOKUP PATTERN ---
-  // For endpoints that fetch a specific entity by ID (e.g., card details):
+  // For endpoints that fetch a specific entity by ID:
   //
-  // async fetchCreditCardFullData(sandboxId: string, requestDto: any): Promise<any> {
-  //   const { cardNumber } = requestDto.payload;
-  //   const card = this.sandboxService.getEntity(sandboxId, 'cards', cardNumber);
+  // async lookupAction(sandboxId: string, requestDto: any): Promise<any> {
+  //   const { entityKey } = requestDto.payload;
+  //   const entity = this.sandboxService.getEntity(sandboxId, 'discoveredEntityType', entityKey);
   //
-  //   if (!card) {
-  //     return { payload: null, exception: { message: 'Card not found' }, executionTime: 0.0 };
+  //   if (!entity) {
+  //     return { payload: null, exception: { message: 'Not found' }, executionTime: 0.0 };
   //   }
   //
   //   return {
-  //     payload: this.toCardFullData(card),
+  //     payload: this.toDetailResponse(entity),
   //     exception: null,
   //     executionTime: 0.0,
   //   };
   // }
   //
-  // --- CROSS-ENTITY AGGREGATION PATTERN ---
-  // For endpoints that aggregate data across entity types (e.g., customer products):
+  // --- CROSS-ENTITY AGGREGATION PATTERN (METADATA-DRIVEN) ---
+  // For endpoints that aggregate data across entity types:
+  // Uses dynamic metadata structures instead of hardcoded entity type references.
   //
-  // async getCustomerProducts(sandboxId: string, requestDto: any): Promise<any> {
-  //   const { customerCode } = requestDto.payload;
+  // async aggregateAction(sandboxId: string, requestDto: any): Promise<any> {
+  //   const entities = this.sandboxService.getEntities(sandboxId);
+  //   const metadata = this.sandboxService.getMetadata(sandboxId);
+  //   const { rootEntityKey, skipChildType } = requestDto.payload;
   //
-  //   // Find all accounts belonging to this customer
-  //   const accounts = this.sandboxService.findEntities(
-  //     sandboxId, 'accounts', (a: any) => a.customerCode === customerCode,
-  //   );
+  //   // Use parentChildRelations to find child entity keys dynamically
+  //   const relations = metadata.parentChildRelations.get(rootEntityKey) || {};
   //
-  //   // Find all cards belonging to this customer
-  //   const cards = this.sandboxService.findEntities(
-  //     sandboxId, 'cards', (c: any) => c.customerCode === customerCode,
-  //   );
+  //   // Build product groups dynamically based on discovered child types
+  //   const productGroups = [];
+  //   for (const [childType, childKeys] of Object.entries(relations)) {
+  //     // Support request-driven filtering (e.g., skip certain child types)
+  //     if (skipChildType === childType) continue;
+  //
+  //     const childEntities = childKeys
+  //       .map(k => (entities[childType] as Map<string, any>)?.get(k))
+  //       .filter(Boolean);
+  //
+  //     // Use typeGroupings for this child type if available
+  //     const typeMap = metadata.typeGroupings[childType];
+  //     // Use preComputedViews if available
+  //     const viewMap = metadata.preComputedViews[childType + 'Positions'];
+  //
+  //     // Group entities by type and build product group response
+  //     // ...
+  //   }
   //
   //   return {
-  //     payload: {
-  //       productGroups: this.buildProductGroups(accounts, cards),
-  //       // ... other response fields
-  //     },
+  //     payload: { productGroups },
   //     exception: null,
   //     messages: null,
   //     executionTime: 0.0,
   //   };
   // }
   //
+  // --- DATE RANGE FILTERING PATTERN ---
+  // For endpoints that filter by date range:
+  //
+  // async listByDateAction(sandboxId: string, requestDto: any): Promise<any> {
+  //   const { parentKey, dateFrom, dateTo } = requestDto.payload;
+  //   let results = this.sandboxService.findEntities(sandboxId, 'childEntityType',
+  //     (entity: any) => entity.parentKey === parentKey,
+  //   );
+  //   if (dateFrom) results = results.filter(e => e.transactionDate >= dateFrom);
+  //   if (dateTo) results = results.filter(e => e.transactionDate <= dateTo);
+  //   // ... build response
+  // }
+  //
+  // --- RELATED ENTITY LOOKUP PATTERN ---
+  // When filtering by a key, also check related entity fields:
+  //
+  // async relatedLookupAction(sandboxId: string, requestDto: any): Promise<any> {
+  //   const { lookupKey, dateFrom, dateTo } = requestDto.payload;
+  //   const parentEntity = this.sandboxService.getEntity(sandboxId, 'parentType', lookupKey);
+  //   const relatedKey = parentEntity?.relatedEntityKey;
+  //   let results = this.sandboxService.findEntities(sandboxId, 'childType',
+  //     (child: any) => child.parentKey === lookupKey ||
+  //       (relatedKey && child.parentKey === relatedKey),
+  //   );
+  //   // ... optional date filtering, build response
+  // }
+  //
   // --- RESPONSE MAPPER METHODS ---
   // Private methods that map entity fields to the API response format.
   // These preserve the exact response structure from the original sample data.
   //
-  // private toSearchItem(customer: any): any {
+  // DEFAULT FALLBACK PATTERN: Use ?? for fields that may not exist on all entities:
+  // private toDetailResponse(entity: any): any {
   //   return {
-  //     customerCode: customer.customerCode,
-  //     name: customer.name,
-  //     // ... map all fields matching the original response format
+  //     primaryKey: entity.primaryKey,
+  //     status: entity.status ?? '00',
+  //     name: entity.name ?? '',
+  //     hasFullData: entity.hasFullData ?? false,
+  //   };
+  // }
+  //
+  // CONDITIONAL FIELD INCLUSION: Only include optional fields when they have values:
+  // private toTransactionItem(item: any): any {
+  //   const result: any = { id: item.id, amount: item.amount };
+  //   if (item.currency !== undefined) result.currency = item.currency;
+  //   if (item.regionCode) result.regionCode = item.regionCode;
+  //   return result;
+  // }
+  //
+  // TYPE CONVERSION: Convert entity types to match API response format:
+  // private toSearchItem(entity: any): any {
+  //   return {
+  //     entityCode: parseFloat(entity.entityCode),  // string → number
+  //     name: entity.name,
   //   };
   // }
 }
@@ -168,10 +223,12 @@ export class {{Controller}}Service {
 **Response builder rules:**
 1. **Request parameters drive behavior** - Extract filter/lookup values from `requestDto.payload`
 2. **Entity queries** - Use `sandboxService.findEntities()` for searches, `sandboxService.getEntity()` for lookups
-3. **Cross-entity joins** - Use `findEntities()` with predicates that reference other entity types
+3. **Metadata-driven aggregation** - Use `sandboxService.getMetadata()` for cross-entity lookups via `parentChildRelations`, type grouping via `typeGroupings`, and pre-computed views via `preComputedViews`
 4. **Exact response format** - The returned JSON must match the original API response structure exactly (field names, nesting, envelope)
 5. **Computed fields** - `total`, `listCount`, `moreData`, `executionTime` are computed at response time from the query results
 6. **Graceful missing data** - Return empty arrays/null fields for missing entities, not HTTP errors (unless the original API returns errors for missing data)
+7. **Response mapper patterns** - Use `?? defaultValue` for fallbacks, conditional field inclusion for optional fields, `parseFloat()` for type conversions
+8. **Date range filtering** - Filter entities by comparing date strings from request parameters
 </controller_service_template>
 
 <controller_dto_template>

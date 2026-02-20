@@ -1,6 +1,6 @@
 ---
 name: create-nestjs-sandbox
-description: Generates containerized NestJS sandbox services from API request/response samples. Creates in-memory endpoints organized by controller (cards, customer, position) with sandbox lifecycle management. Use when building mock API services or creating sandbox environments from sample data.
+description: Generates containerized NestJS sandbox services from API request/response samples. Creates in-memory endpoints organized by dynamically identified controllers with sandbox lifecycle management. Use when building mock API services or creating sandbox environments from sample data.
 ---
 
 <objective>
@@ -24,7 +24,9 @@ Generates production-ready NestJS sandbox services from API request/response sam
 
 **Controller-Based Organization** - URLs are parsed into `{api}/{controller}/{action}` segments. Each unique controller value gets its own NestJS module (controller, service, DTOs). When URL segments are ambiguous, ask the user for clarification using AskUserQuestion.
 
-**Entity-Based Data Model** - Instead of storing static responses per endpoint, identify the domain entities (e.g., Customer, Card, Account) from the API data. Determine the root entity (the one others relate to) and model relationships. The in-memory store holds entities, and controller services query entities to dynamically construct API responses. This enables realistic behavior like searching, filtering, and cross-entity lookups. See `references/entity-model.md` for the full entity identification and modeling process.
+**Entity-Based Data Model** - Instead of storing static responses per endpoint, identify the domain entities from the API data dynamically. Entity types are NOT predetermined — they are discovered by analyzing recurring identifiers across request parameters and response fields. Determine the root entity (the one others relate to) and model relationships. The in-memory store holds entities, and controller services query entities to dynamically construct API responses. This enables realistic behavior like searching, filtering, and cross-entity lookups. See `references/entity-model.md` for the full entity identification and modeling process.
+
+**Metadata-Driven Relationships** - Alongside the EntityStore, each sandbox maintains a `SandboxMetadata` object with three dynamic structures: (1) `parentChildRelations` — a Map keyed by root entity key, mapping to a Record of child entity type → child key arrays, (2) `typeGroupings` — a Record keyed by entity type name, each mapping entity keys to their type/category info, and (3) `preComputedViews` — a Record keyed by a view name, each mapping entity keys to pre-computed response fragments for aggregation endpoints. These structures are built dynamically based on whatever entities are discovered in the API data. Controller services use metadata for efficient cross-entity lookups and product grouping. Metadata is internal-only and NOT included in serialized API responses.
 
 </essential_principles>
 
@@ -69,11 +71,12 @@ Follow `workflows/generate-service.md` to parse API data and generate the comple
 <success_criteria>
 The skill is successful when:
 - URLs are correctly parsed into `{api}/{controller}/{action}` segments (ambiguities resolved with user)
-- Domain entities are identified with their primary keys and relationships (root entity confirmed with user)
+- Domain entities are dynamically identified with their primary keys and relationships (root entity confirmed with user)
 - Generated service correctly implements all controllers and endpoints from input data
 - Sandbox CRUD operations are functional at `/sandboxes` endpoints
 - Entity store holds normalized entities, and controllers query entities to build responses dynamically
-- Controller endpoints support realistic behavior (search, filter, cross-entity lookups) based on request parameters
+- Metadata dynamically tracks parent-child relations, type groupings, and pre-computed views for whatever entities were discovered
+- Controller endpoints support realistic behavior (search, filter, cross-entity lookups) based on request parameters and metadata
 - DTOs accurately match provided API structures with Swagger decorators
 - Docker containerization is ready for deployment
 - Swagger documentation is accessible at `/api`

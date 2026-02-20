@@ -1,5 +1,5 @@
 <architecture_overview>
-The generated NestJS sandbox service follows a modular architecture with sandbox lifecycle management and controller-specific modules for each API group identified from the input data. Data is stored as normalized entities in an entity store, and controller services query entities to dynamically construct API responses.
+The generated NestJS sandbox service follows a modular architecture with sandbox lifecycle management and controller-specific modules for each API group identified from the input data. Data is stored as normalized entities in an entity store, and controller services query entities to dynamically construct API responses. Entity types are discovered dynamically from the provided API data — they are NOT predetermined.
 </architecture_overview>
 
 <project_structure>
@@ -12,8 +12,8 @@ sandbox-service/
 │   │   ├── dto/
 │   │   │   └── api-header.dto.ts        # Shared API header DTO
 │   │   ├── interfaces/
-│   │   │   ├── sandbox-store.interface.ts # SandboxData, EntityStore interfaces
-│   │   │   └── entities.interface.ts     # Entity type interfaces (CustomerEntity, CardEntity, etc.)
+│   │   │   ├── sandbox-store.interface.ts # SandboxData, EntityStore, SandboxMetadata interfaces
+│   │   │   └── entities.interface.ts     # Dynamically generated entity type interfaces
 │   │   └── decorators/
 │   │       └── sandbox-id.decorator.ts  # Extract sandboxId from header/param
 │   ├── sandbox/
@@ -48,25 +48,42 @@ sandbox-service/
 
 // Each entity type is a separate interface with a primary key
 // and optional foreign keys linking to other entities.
-// Entity interfaces are generated from the parsed API response data.
+// Entity interfaces are generated dynamically from the parsed API response data.
 
 interface EntityStore {
-  // One Map per identified entity type, keyed by primary key
+  // One Map per dynamically identified entity type, keyed by primary key
   [entityType: string]: Map<string, any>;
-  // Example:
-  // customers: Map<string, CustomerEntity>;
-  // cards: Map<string, CardEntity>;
-  // accounts: Map<string, AccountEntity>;
+  // Entity types are discovered from the API data, NOT hardcoded.
+  // Examples might include: customers, cards, accounts, loans, deposits,
+  // transactions, merchants, branches, etc.
+}
+
+// SandboxMetadata holds dynamic relational lookup structures for efficient
+// cross-entity queries. Internal-only — NOT included in serialized API responses.
+interface SandboxMetadata {
+  // Maps root entity key → { childEntityType → childEntityKeys[] }
+  // Dynamically built based on discovered parent-child relationships
+  parentChildRelations: Map<string, Record<string, string[]>>;
+
+  // Maps entity type name → Map<entityKey, typeInfo>
+  // Dynamically built for entity types that have type/category classifications
+  typeGroupings: Record<string, Map<string, any>>;
+
+  // Maps view name → Map<entityKey, preComputedData>
+  // Dynamically built for entities that appear differently in aggregation responses
+  preComputedViews: Record<string, Map<string, any>>;
 }
 
 interface SandboxData {
   sandboxId: string;
   createdAt: Date;
   entities: EntityStore;
+  metadata: SandboxMetadata;
 }
 
 // IMPORTANT: Map objects serialize to empty {} with JSON.stringify.
 // Define serialized counterparts (Map → Record) for API responses.
+// Metadata is NOT included in serialized output — it's internal only.
 type SerializedEntityStore = {
   [K in keyof EntityStore]: Record<string, any>;
 };
@@ -81,7 +98,8 @@ interface SerializedSandboxData {
 **Key differences from static response storage:**
 - Entities are normalized (flat, linked by keys) instead of nested per-endpoint
 - Each entity type has its own Map, keyed by primary key
-- Foreign keys link related entities (e.g., `CardEntity.customerCode` → `CustomerEntity`)
+- Foreign keys link related entities (e.g., child entity stores parent's primary key)
+- Entity types are dynamically discovered, not hardcoded
 - Controller services query entities and construct responses dynamically
 
 **Serialization requirement:**
@@ -98,7 +116,7 @@ Internal entity access methods (used by controller services) work with raw `Map`
 
 The service imports `BadRequestException` and `ConflictException` alongside `Injectable` and `NotFoundException` from `@nestjs/common`.
 
-The service defines three private data maps:
+The service defines three private data maps (populated from dynamically discovered entities):
 1. **`primaryKeyMap`** - Maps entity type names to their primary key field names
 2. **`entitySchemas`** - Maps entity types to required fields and their `typeof` types (for shape validation on add)
 3. **`uniqueFieldsMap`** - Maps entity types to fields that must be unique within the collection
@@ -111,28 +129,30 @@ export class SandboxService {
   private sandboxes: Map<string, SandboxData> = new Map();
 
   // --- Data maps for validation and primary key resolution ---
+  // These are populated based on whatever entities are discovered in the API data
 
   private readonly primaryKeyMap: Record<string, string> = {
-    // e.g.: customers: 'customerCode', cards: 'cardNumber', accounts: 'account'
+    // Dynamically populated, e.g.: customers: 'customerCode', cards: 'cardNumber'
   };
 
   private readonly entitySchemas: Record<string, Record<string, string>> = {
-    // e.g.: customers: { customerCode: 'string', name: 'string', taxNo: 'string', branch: 'object', ... }
-    // Maps each entity type to its required fields and their typeof types.
+    // Dynamically populated with required fields and typeof types per entity type
   };
 
   private readonly uniqueFieldsMap: Record<string, string[]> = {
-    // e.g.: customers: ['taxNo', 'customerCode'], accounts: ['account'], cards: ['cardNumber']
+    // Dynamically populated with unique field names per entity type
   };
 
   // --- Public API methods (return SerializedSandboxData) ---
 
   createSandbox(createDto: CreateSandboxDto): SerializedSandboxData {
     const sandboxId = createDto.sandboxId || uuidv4();
+    const { entities, metadata } = this.generateSeedData();
     const sandboxData: SandboxData = {
       sandboxId,
       createdAt: new Date(),
-      entities: this.generateSeedEntities(),
+      entities,
+      metadata,
     };
     this.sandboxes.set(sandboxId, sandboxData);
     return this.serializeSandbox(sandboxData);
@@ -152,6 +172,10 @@ export class SandboxService {
 
   getEntities(sandboxId: string): EntityStore {
     return this.getSandboxInternal(sandboxId).entities;
+  }
+
+  getMetadata(sandboxId: string): SandboxMetadata {
+    return this.getSandboxInternal(sandboxId).metadata;
   }
 
   getEntityCollection<T>(sandboxId: string, entityType: string): Map<string, T> {
@@ -190,14 +214,23 @@ export class SandboxService {
     };
   }
 
-  private generateSeedEntities(): EntityStore {
-    // {{SEED_ENTITIES_BLOCK}}
-    // Populated with entity instances extracted from parsed API responses.
-    // Each entity type is a Map keyed by primary key.
+  private generateSeedData(): { entities: EntityStore; metadata: SandboxMetadata } {
+    // {{SEED_DATA_BLOCK}}
+    // Returns both entity Maps AND metadata populated from parsed API responses.
+    // Entity types and metadata structures are determined by the discovered entities.
+    //
+    // Entities: Map<primaryKey, entityData> per discovered entity type.
+    // Metadata:
+    //   parentChildRelations: Map<rootKey, { childType: childKeys[] }>
+    //   typeGroupings: { entityType: Map<entityKey, typeInfo> }
+    //   preComputedViews: { viewName: Map<entityKey, preComputedData> }
     return {
-      customers: new Map(),
-      cards: new Map(),
-      accounts: new Map(),
+      entities: {},
+      metadata: {
+        parentChildRelations: new Map(),
+        typeGroupings: {},
+        preComputedViews: {},
+      },
     };
   }
 }
@@ -232,51 +265,115 @@ export class ResourceController {
 </controller_pattern>
 
 <controller_service_pattern>
-Controller services query entities and build responses dynamically:
+Controller services query entities and metadata to build responses dynamically. Entity type names used in queries are determined by the discovered entities, not hardcoded.
 
 ```typescript
 @Injectable()
 export class ResourceService {
   constructor(private readonly sandboxService: SandboxService) {}
 
-  async handleAction(sandboxId: string, requestDto: any): Promise<any> {
-    // 1. Extract lookup/filter parameters from request
-    const { someId, someFilter } = requestDto.payload;
+  // SEARCH PATTERN: Use findEntities with predicates, metadata for ownership checks
+  async searchAction(sandboxId: string, requestDto: any): Promise<any> {
+    const metadata = this.sandboxService.getMetadata(sandboxId);
+    const { someFilter, parentKey } = requestDto.payload;
 
-    // 2. Query entities from the store
-    const entities = this.sandboxService.getEntities(sandboxId);
-    let results = Array.from(entities.someEntityType.values());
-
-    // 3. Filter based on request parameters
-    if (someFilter) {
-      results = results.filter(e => e.field === someFilter);
-    }
-
-    // 4. Build response in the original API format
-    return {
-      payload: {
-        items: results.map(e => this.toResponseItem(e)),
-        moreData: false,
+    const results = this.sandboxService.findEntities(sandboxId, 'discoveredEntityType',
+      (entity: any) => {
+        if (someFilter && entity.field !== someFilter) return false;
+        if (parentKey) {
+          const relations = metadata.parentChildRelations.get(entity.rootKey) || {};
+          const childKeys = relations['discoveredEntityType'] || [];
+          if (!childKeys.includes(parentKey)) return false;
+        }
+        return true;
       },
-      exception: null,
-      messages: null,
-      executionTime: 0.0,
+    );
+
+    return {
+      payload: { items: results.map(e => this.toResponseItem(e)), moreData: false },
+      exception: null, messages: null, executionTime: 0.0,
     };
   }
 
-  // Map entity fields to the API response shape
+  // AGGREGATION PATTERN: Use metadata for key lookups and type grouping
+  async aggregateAction(sandboxId: string, requestDto: any): Promise<any> {
+    const entities = this.sandboxService.getEntities(sandboxId);
+    const metadata = this.sandboxService.getMetadata(sandboxId);
+    const { rootEntityKey } = requestDto.payload;
+
+    // Use parentChildRelations to find child entity keys
+    const relations = metadata.parentChildRelations.get(rootEntityKey) || {};
+
+    // Build product groups dynamically based on discovered child types
+    const productGroups = [];
+    for (const [childType, childKeys] of Object.entries(relations)) {
+      const childEntities = childKeys
+        .map(k => (entities[childType] as Map<string, any>)?.get(k))
+        .filter(Boolean);
+
+      // Use typeGroupings for this child type if available
+      const typeMap = metadata.typeGroupings[childType];
+
+      // Use preComputedViews if available
+      const viewMap = metadata.preComputedViews[childType + 'Positions'];
+
+      // ... build product group based on type grouping and view data
+    }
+
+    return {
+      payload: { productGroups },
+      exception: null, messages: null, executionTime: 0.0,
+    };
+  }
+
+  // LOOKUP PATTERN: Get single entity, map with default fallbacks
+  async lookupAction(sandboxId: string, requestDto: any): Promise<any> {
+    const entity = this.sandboxService.getEntity(sandboxId, 'discoveredEntityType', requestDto.payload.id);
+    if (!entity) {
+      return { payload: null, exception: { message: 'Not found' }, executionTime: 0.0 };
+    }
+    return { payload: this.toDetailResponse(entity), exception: null, executionTime: 0.0 };
+  }
+
+  // DATE RANGE PATTERN: Filter by date, support related entity lookups
+  async listByDateAction(sandboxId: string, requestDto: any): Promise<any> {
+    const { parentId, dateFrom, dateTo } = requestDto.payload;
+    let results = this.sandboxService.findEntities(sandboxId, 'childType',
+      (e: any) => e.parentId === parentId,
+    );
+    if (dateFrom) results = results.filter(e => e.date >= dateFrom);
+    if (dateTo) results = results.filter(e => e.date <= dateTo);
+    return { payload: { items: results }, exception: null, executionTime: 0.0 };
+  }
+
+  // DEFAULT FALLBACK MAPPER: Use ?? for fields missing on some entities
+  private toDetailResponse(entity: any): any {
+    return {
+      id: entity.id,
+      status: entity.status ?? '00',
+      name: entity.name ?? '',
+      hasFullData: entity.hasFullData ?? false,
+    };
+  }
+
+  // CONDITIONAL FIELD MAPPER: Only include optional fields when present
   private toResponseItem(entity: any): any {
-    return { /* map entity fields to match original API response */ };
+    const result: any = { id: entity.id, name: entity.name };
+    if (entity.optionalField !== undefined) result.optionalField = entity.optionalField;
+    return result;
   }
 }
 ```
 
 **Response builder principles:**
 - Request parameters drive filtering and lookups
+- **Metadata** for cross-entity relationship lookups via `parentChildRelations`, type grouping via `typeGroupings`, and pre-computed views via `preComputedViews`
 - Response format matches the original API sample responses exactly
-- Entity fields populate the response
+- Entity fields populate the response with `?? defaultValue` fallbacks
+- Conditional field inclusion for optional response fields
 - Derived fields (counts, totals, flags) are computed at response time
 - Missing entities return empty results, not errors
+- Date range filtering for transaction/log endpoints
 </controller_service_pattern>
 
 <sandbox_controller_endpoints>
@@ -292,18 +389,18 @@ POST   /sandbox/:sandboxId/{controller}/{action}  → Controller-specific endpoi
 </sandbox_controller_endpoints>
 
 <update_sandbox_format>
-The PUT endpoint supports entity-level updates with validation:
+The PUT endpoint supports entity-level updates with validation. Entity type names are dynamic — they match whatever entity types were discovered:
 
 ```json
 {
   "entities": {
-    "customers": {
-      "add": [{ "customerCode": "999", "name": "New Customer", "taxNo": "111222333", ... }],
-      "update": { "1317952138": { "name": "Updated Name" } },
-      "remove": ["old-customer-code"]
+    "{discoveredEntityType}": {
+      "add": [{ "primaryKeyField": "999", "name": "New Entity", ... }],
+      "update": { "existingKey": { "name": "Updated Name" } },
+      "remove": ["old-entity-key"]
     },
-    "cards": {
-      "add": [{ "cardNumber": "1234567890", "customerCode": "999", "cardStatus": "00" }]
+    "{anotherDiscoveredType}": {
+      "add": [{ "primaryKeyField": "1234567890", "parentKey": "999", ... }]
     }
   }
 }
@@ -325,15 +422,15 @@ Pass 2 applies mutations only after all validations pass:
 **Important TypeScript note:** When spreading `updates` from `Object.entries()`, the value is typed as `any`. The spread operator on `any` causes `TS2698: Spread types may only be created from object types`. Fix with: `{ ...existing, ...(updates as object) }`.
 
 This enables test scenarios like:
-- Adding multiple customers to test search
-- Modifying card statuses to test different states
+- Adding multiple entities to test search
+- Modifying entity states to test different scenarios
 - Removing entities to test empty-result scenarios
 </update_sandbox_format>
 
 <swagger_configuration>
 The generated service includes full Swagger/OpenAPI documentation:
 
-- **Title:** Generated from the API source (e.g., "NBG Sandbox API")
+- **Title:** Generated from the API source (e.g., "Banking Sandbox API")
 - **Version:** "1.0.0"
 - **Description:** "Sandbox service with entity-based in-memory data for API testing"
 - **Endpoint:** `/api` for Swagger UI, `/api-json` for OpenAPI spec
@@ -343,16 +440,16 @@ The generated service includes full Swagger/OpenAPI documentation:
 </swagger_configuration>
 
 <module_wiring>
-The AppModule imports all generated modules:
+The AppModule imports all generated modules. Module names are derived from the discovered controllers:
 
 ```typescript
 @Module({
   imports: [
     SandboxModule,
-    // One module per controller:
-    CustomerModule,
-    CardsModule,
-    PositionModule,
+    // One module per discovered controller:
+    // {ControllerA}Module,
+    // {ControllerB}Module,
+    // {ControllerC}Module,
     // ...etc
   ],
 })
@@ -364,10 +461,10 @@ Each controller module imports SandboxModule to access the shared SandboxService
 ```typescript
 @Module({
   imports: [SandboxModule],
-  controllers: [CardsController],
-  providers: [CardsService],
+  controllers: [{Controller}Controller],
+  providers: [{Controller}Service],
 })
-export class CardsModule {}
+export class {Controller}Module {}
 ```
 
 SandboxModule exports SandboxService so controller modules can inject it:
